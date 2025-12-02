@@ -1,123 +1,212 @@
-// Import necessary modules
-const express = require('express'); // Web framework for Node.js
-const http = require('http'); // Node's built-in HTTP module
-const { Server } = require("socket.io"); // Socket.io for real-time communication
-const fs = require('fs/promises'); // File system module with promise-based API
-const path = require('path'); // Module for handling file paths
+// Wait for the entire HTML document to be loaded before running any JavaScript
+document.addEventListener('DOMContentLoaded', () => {
 
-// Create an Express application and an HTTP server
-const app = express();
-const server = http.createServer(app);
-// Create a new Socket.io server, attaching it to the HTTP server
-const io = new Server(server);
+    // --- DOM Elements ---
+    // Get references to all the HTML elements we need to interact with
+    const loginOverlay = document.getElementById('login-overlay');
+    const loginForm = document.getElementById('login-form');
+    const usernameInput = document.getElementById('username-input');
+    const chatApp = document.getElementById('chat-app');
+    const targetUserInput = document.getElementById('target-user-input');
+    const messagesContainer = document.getElementById('messages-container');
+    const messageForm = document.getElementById('message-form');
+    const messageInput = document.getElementById('message-input');
+    const sendButton = document.getElementById('send-button');
+    const chatWithHeader = document.getElementById('chat-with');
 
-// Serve the "public" folder as static files. This makes index.html, style.css, etc. accessible.
-app.use(express.static('public'));
+    // --- State ---
+    // Variables to keep track of the application's current state
+    let socket; // The socket.io connection to the server
+    let myUserId = ''; // The current user's username
+    let targetUserId = ''; // The username of the person we are chatting with
+    let sodium; // The libsodium library object for encryption
+    let keyPair; // The current user's public/private key pair for E2EE
+    // A Map to store the shared secret for each user we chat with
+    // Format: Map { 'bob' => Uint8Array(...), 'alice' => Uint8Array(...) }
+    const sharedSecrets = new Map();
 
-// --- Simple Local Message Store ---
-// This is a simple file-based database for storing messages.
+    // --- E2EE Functions ---
+    // These functions handle all the encryption and decryption logic
 
-const MESSAGE_FILE_PATH = path.join(__dirname, 'messages.json');
-let messages = []; // In-memory array to hold messages for fast access
+    // Initialize the sodium library and generate a new key pair for the user
+    const initSodium = async () => {
+        // Wait for the sodium library to be fully loaded and ready
+        await window.sodium.ready;
+        sodium = window.sodium;
+        // Generate a new key pair for key exchange (X25519)
+        keyPair = sodium.crypto_kx_keypair();
+        console.log('🔐 E2EE Initialized and key pair generated.');
+    };
 
-// Function to load messages from the file when the server starts
-const loadMessages = async () => {
-    try {
-        const data = await fs.readFile(MESSAGE_FILE_PATH, 'utf-8');
-        messages = JSON.parse(data);
-        console.log(`📜 Loaded ${messages.length} messages.`);
-    } catch (error) {
-        // If the file doesn't exist, it's the first time running the server.
-        console.log('No messages file found. Starting fresh.');
-        messages = [];
-    }
-};
+    // Encrypt a message using a shared secret
+    const encryptMessage = (message, sharedSecret) => {
+        // Generate a random nonce (number used once) for each encryption
+        const nonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
+        // Encrypt the message using the shared secret and the nonce
+        const ciphertext = sodium.crypto_secretbox_easy(message, nonce, sharedSecret);
+        // Return the encrypted data and the nonce, both encoded in Base64 for safe transport
+        return { ciphertext: sodium.to_base64(ciphertext), nonce: sodium.to_base64(nonce) };
+    };
 
-// Function to save the in-memory messages to the file
-const saveMessages = async () => {
-    try {
-        // Write the messages array to the file, nicely formatted with JSON.stringify
-        await fs.writeFile(MESSAGE_FILE_PATH, JSON.stringify(messages, null, 2));
-        console.log('💾 Messages saved.');
-    } catch (error) {
-        console.error("Failed to save messages:", error);
-    }
-};
+    // Decrypt a message using a shared secret
+    const decryptMessage = (encryptedData, sharedSecret) => {
+        try {
+            // Decode the ciphertext and nonce from Base64
+            const ciphertext = sodium.from_base64(encryptedData.ciphertext);
+            const nonce = sodium.from_base64(encryptedData.nonce);
+            // Decrypt the message
+            const decryptedBytes = sodium.crypto_secretbox_open_easy(ciphertext, nonce, sharedSecret);
+            // Convert the decrypted bytes back to a string and return it
+            return sodium.to_string(decryptedBytes);
+        } catch (e) {
+            // If decryption fails (e.g., wrong key), log an error and return a placeholder
+            console.error("Decryption failed!", e);
+            return "[Decryption Error]";
+        }
+    };
 
-// Load messages on server startup
-loadMessages();
-// Save messages to the file every 30 seconds
-setInterval(saveMessages, 30000);
+    // Derive a shared secret from our private key and their public key
+    const deriveSharedKey = (theirPublicKeyB64) => {
+        // Decode their public key from Base64
+        const theirPublicKey = sodium.from_base64(theirPublicKeyB64);
+        // Perform the key exchange operation to get a shared secret
+        const { sharedRx } = sodium.crypto_kx_client_session_keys(
+            keyPair.publicKey, keyPair.privateKey, theirPublicKey
+        );
+        return sharedRx; // This is the shared secret key
+    };
+    
+    // --- UI Functions ---
+    // Functions that update the user interface
 
-// --- Socket.io Logic ---
-// This is where all the real-time magic happens
+    // Display a new message in the chat window
+    const renderMessage = (msg) => {
+        // Create the main message container
+        const messageDiv = document.createElement('div');
+        // Add 'sent' or 'received' class for styling
+        messageDiv.classList.add('message', msg.senderId === myUserId ? 'sent' : 'received');
+        
+        // Create the message bubble
+        const bubble = document.createElement('div');
+        bubble.classList.add('message-bubble');
+        bubble.textContent = msg.text;
 
-// In-memory Maps to store user information and keys
-const publicKeys = new Map(); // userId -> publicKey
-const userToSocket = new Map(); // userId -> socket.id
-const socketToUser = new Map(); // socket.id -> userId
+        // Create the info line (showing sender's name)
+        const info = document.createElement('div');
+        info.classList.add('message-info');
+        info.textContent = msg.senderId;
 
-// Listen for new socket connections
-io.on('connection', (socket) => {
-    console.log(`🔌 User connected: ${socket.id}`);
+        // Assemble the message element and add it to the container
+        messageDiv.appendChild(bubble);
+        messageDiv.appendChild(info);
+        messagesContainer.appendChild(messageDiv);
 
-    // When a user registers their username
-    socket.on('register-user', (userId) => {
-        socketToUser.set(socket.id, userId);
-        userToSocket.set(userId, socket.id);
-        console.log(`✅ User registered: ${userId}`);
-    });
+        // Automatically scroll to the bottom to show the new message
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    };
 
-    // When a user registers their public key for E2EE
-    socket.on('registerPublicKey', (data) => {
-        const userId = socketToUser.get(socket.id);
-        if (userId) {
-            publicKeys.set(userId, data.publicKey);
-            console.log(`🔑 Public key registered for ${userId}`);
+    // Enable the message input field and send button
+    const enableChat = () => {
+        messageInput.disabled = false;
+        sendButton.disabled = false;
+    };
+
+    // --- Event Listeners ---
+    // Functions that run when the user interacts with the page
+
+    // Handle the login form submission
+    loginForm.addEventListener('submit', (e) => {
+        e.preventDefault(); // Prevent the form from reloading the page
+        myUserId = usernameInput.value.trim();
+        if (myUserId) {
+            // *** IMPORTANT FIX FOR RENDER ***
+            // Connect to the server using socket.io at your backend's URL
+            socket = io('https://beautiful-chat-api.onrender.com'); // <-- CHANGE THIS URL
+            
+            setupSocketListeners(); // Set up all the socket event listeners
+            // Hide the login overlay and show the chat app
+            loginOverlay.style.opacity = '0';
+            setTimeout(() => {
+                loginOverlay.classList.add('hidden');
+                chatApp.classList.remove('hidden');
+            }, 300);
         }
     });
 
-    // When a user requests another user's public key
-    socket.on('getPublicKey', (targetUserId) => {
-        const key = publicKeys.get(targetUserId);
-        if (key) {
-            // Send the public key back to the requesting user's socket
-            socket.emit('publicKey', { userId: targetUserId, publicKey: key });
+    // Handle changing the target user in the input field
+    targetUserInput.addEventListener('change', (e) => {
+        targetUserId = e.target.value.trim();
+        if (targetUserId) {
+            chatWithHeader.textContent = `Chatting with ${targetUserId}`;
+            // Ask the server for the public key of the user we want to chat with
+            socket.emit('getPublicKey', targetUserId);
         }
     });
 
-    // When a user sends a message
-    socket.on('sendMessage', (msgData) => {
-        const senderId = socketToUser.get(socket.id);
-        if (!senderId) return; // Ignore messages from unregistered users
-
-        // Create a full message object with sender, timestamp, etc.
-        const fullMessage = { ...msgData, senderId, timestamp: new Date() };
-        // Store the encrypted message in our in-memory array
-        messages.push(fullMessage);
-
-        // Find the socket ID of the intended recipient
-        const targetSocketId = userToSocket.get(msgData.receiverId);
-        if (targetSocketId) {
-            // Send the encrypted message directly to the recipient's socket
-            io.to(targetSocketId).emit('newMessage', fullMessage);
+    // Handle the message form submission
+    messageForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const text = messageInput.value.trim();
+        if (text && targetUserId) {
+            // Get the shared secret for the target user
+            const sharedSecret = sharedSecrets.get(targetUserId);
+            if (sharedSecret) {
+                // Encrypt the message
+                const encrypted = encryptMessage(text, sharedSecret);
+                // Send the encrypted message to the server
+                socket.emit('sendMessage', { receiverId: targetUserId, ...encrypted });
+                // Display the message in our own chat window immediately
+                renderMessage({ senderId: myUserId, text });
+                messageInput.value = ''; // Clear the input field
+            } else {
+                alert("E2EE not yet established with this user. Please wait.");
+            }
         }
     });
 
-    // When a user disconnects (closes the tab)
-    socket.on('disconnect', () => {
-        const userId = socketToUser.get(socket.id);
-        if (userId) {
-            console.log(`❌ User disconnected: ${userId}`);
-            // Clean up our maps
-            socketToUser.delete(socket.id);
-            userToSocket.delete(userId);
-        }
-    });
-});
+    // --- Socket Listeners ---
+    // Functions that handle messages received from the server
 
-// Start the server and listen for incoming connections on the specified port
-const PORT = process.env.PORT || 3000; // Use the port from environment variable or default to 3000
-server.listen(PORT, () => {
-    console.log(`🚀 Server running at http://localhost:${PORT}`);
+    const setupSocketListeners = () => {
+        // When the connection to the server is established
+        socket.on('connect', () => {
+            console.log('🟢 Connected to server!');
+            // Register our username with the server
+            socket.emit('register-user', myUserId);
+            // Initialize E2EE and then register our public key
+            initSodium().then(() => {
+                const pubKeyB64 = sodium.to_base64(keyPair.publicKey);
+                socket.emit('registerPublicKey', { publicKey: pubKeyB64 });
+            });
+        });
+
+        // When we receive a public key from the server
+        socket.on('publicKey', ({ userId, publicKey }) => {
+            // Check if this is the key for the user we want to chat with
+            if (userId === targetUserId) {
+                console.log(`🔑 Received public key for ${userId}`);
+                // Derive the shared secret using their public key and our private key
+                const sharedSecret = deriveSharedKey(publicKey);
+                // Store the shared secret for later use
+                sharedSecrets.set(userId, sharedSecret);
+                // Enable the chat input now that E2EE is established
+                enableChat();
+                console.log('✅ E2EE established.');
+            }
+        });
+
+        // When we receive a new message from the server
+        socket.on('newMessage', (msg) => {
+            // Only decrypt and display the message if it's from the user we're currently chatting with
+            if (msg.senderId === targetUserId) {
+                const sharedSecret = sharedSecrets.get(msg.senderId);
+                if (sharedSecret) {
+                    // Decrypt the message
+                    const decryptedText = decryptMessage(msg, sharedSecret);
+                    // Display the decrypted message
+                    renderMessage({ senderId: msg.senderId, text: decryptedText });
+                }
+            }
+        });
+    };
 });
