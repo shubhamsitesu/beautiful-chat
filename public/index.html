@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Chat</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- Login Overlay -->
+    <div id="login-overlay" class="overlay">
+        <div class="login-card">
+            <h1>🔐 Secure Chat</h1>
+            <p>End-to-end encrypted</p>
+            <form id="login-form">
+                <input type="text" id="username-input" placeholder="Your username" required>
+                <button type="submit">Enter Chat</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main Chat Application -->
+    <div id="chat-app" class="chat-container hidden">
+        <header class="chat-header">
+            <div class="header-info">
+                <span class="status-indicator online"></span>
+                <h2 id="chat-with">Chatting with...</h2>
+            </div>
+            <div class="header-actions">
+                <input type="text" id="target-user-input" placeholder="User ID to chat with">
+            </div>
+        </header>
+
+        <main id="messages-container" class="messages-container">
+            <!-- Messages will be dynamically added here -->
+        </main>
+
+        <footer class="message-input-container">
+            <form id="message-form">
+                <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" disabled>
+                <button type="submit" id="send-button" disabled>Send</button>
+            </form>
+        </footer>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/libsodium-wrappers@0.7.11/dist/libsodium-wrappers.min.js"></script>
+    <script src="script.js"></script>
+
+</body>
+</html>
