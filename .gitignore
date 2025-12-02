@@ -1,0 +1,10 @@
+# Dependencies
+/node_modules
+
+# Runtime Data
+/messages.json
+*.log
+
+# OS Files
+.DS_Store
+Thumbs.db
