@@ -1,10 +1,11 @@
-# Dependencies
+# Dependency directory
 /node_modules
 
-# Runtime Data
-/messages.json
-*.log
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# OS Files
+# Environment files
+.env
 .DS_Store
-Thumbs.db
