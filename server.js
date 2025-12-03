@@ -1,123 +1,125 @@
-// Import necessary modules
-const express = require('express'); // Web framework for Node.js
-const http = require('http'); // Node's built-in HTTP module
-const { Server } = require("socket.io"); // Socket.io for real-time communication
-const fs = require('fs/promises'); // File system module with promise-based API
-const path = require('path'); // Module for handling file paths
+const express = require('express');
+const http = require('http');
+const { Server } = require("socket.io");
+const bcrypt = require('bcrypt');
+const path = require('path');
 
-// Create an Express application and an HTTP server
 const app = express();
 const server = http.createServer(app);
-// Create a new Socket.io server, attaching it to the HTTP server
 const io = new Server(server);
 
-// Serve the "public" folder as static files. This makes index.html, style.css, etc. accessible.
+// --- Middleware ---
+app.use(express.json());
 app.use(express.static('public'));
 
-// --- Simple Local Message Store ---
-// This is a simple file-based database for storing messages.
+// --- In-Memory "Database" ---
+// For a real app, you'd use a proper database like PostgreSQL or MongoDB.
+const users = {}; // { 'username': { passwordHash: '...' } }
+const onlineUsers = new Map(); // { socketId: 'username' }
+const chatSessions = new Map(); // { 'sessionId': { user1: '...', user2: '...', messages: [...] } }
 
-const MESSAGE_FILE_PATH = path.join(__dirname, 'messages.json');
-let messages = []; // In-memory array to hold messages for fast access
+// --- Authentication Routes ---
+app.post('/api/register', async (req, res) => {
+    const { username, password } = req.body;
+    if (users[username]) return res.status(400).json({ error: 'User already exists' });
+    const passwordHash = await bcrypt.hash(password, 10);
+    users[username] = { passwordHash };
+    console.log(`✅ User registered: ${username}`);
+    res.status(201).json({ message: 'User registered successfully' });
+});
 
-// Function to load messages from the file when the server starts
-const loadMessages = async () => {
-    try {
-        const data = await fs.readFile(MESSAGE_FILE_PATH, 'utf-8');
-        messages = JSON.parse(data);
-        console.log(`📜 Loaded ${messages.length} messages.`);
-    } catch (error) {
-        // If the file doesn't exist, it's the first time running the server.
-        console.log('No messages file found. Starting fresh.');
-        messages = [];
+app.post('/api/login', async (req, res) => {
+    const { username, password } = req.body;
+    if (!users[username] || !(await bcrypt.compare(password, users[username].passwordHash))) {
+        return res.status(401).json({ error: 'Invalid credentials' });
     }
-};
-
-// Function to save the in-memory messages to the file
-const saveMessages = async () => {
-    try {
-        // Write the messages array to the file, nicely formatted with JSON.stringify
-        await fs.writeFile(MESSAGE_FILE_PATH, JSON.stringify(messages, null, 2));
-        console.log('💾 Messages saved.');
-    } catch (error) {
-        console.error("Failed to save messages:", error);
-    }
-};
-
-// Load messages on server startup
-loadMessages();
-// Save messages to the file every 30 seconds
-setInterval(saveMessages, 30000);
+    console.log(`🔑 User logged in: ${username}`);
+    res.status(200).json({ message: 'Login successful' });
+});
 
 // --- Socket.io Logic ---
-// This is where all the real-time magic happens
-
-// In-memory Maps to store user information and keys
-const publicKeys = new Map(); // userId -> publicKey
-const userToSocket = new Map(); // userId -> socket.id
-const socketToUser = new Map(); // socket.id -> userId
-
-// Listen for new socket connections
 io.on('connection', (socket) => {
     console.log(`🔌 User connected: ${socket.id}`);
 
-    // When a user registers their username
-    socket.on('register-user', (userId) => {
-        socketToUser.set(socket.id, userId);
-        userToSocket.set(userId, socket.id);
-        console.log(`✅ User registered: ${userId}`);
-    });
-
-    // When a user registers their public key for E2EE
-    socket.on('registerPublicKey', (data) => {
-        const userId = socketToUser.get(socket.id);
-        if (userId) {
-            publicKeys.set(userId, data.publicKey);
-            console.log(`🔑 Public key registered for ${userId}`);
+    // --- User Authentication & Online Status ---
+    socket.on('authenticate', async ({ username, password }) => {
+        if (!users[username] || !(await bcrypt.compare(password, users[username].passwordHash))) {
+            socket.emit('auth-error', 'Invalid credentials');
+            return;
         }
+        onlineUsers.set(socket.id, username);
+        socket.username = username; // Store username on the socket object
+        io.emit('user-list-updated', Array.from(onlineUsers.values()));
+        console.log(`✅ Authenticated: ${username}`);
     });
 
-    // When a user requests another user's public key
-    socket.on('getPublicKey', (targetUserId) => {
-        const key = publicKeys.get(targetUserId);
-        if (key) {
-            // Send the public key back to the requesting user's socket
-            socket.emit('publicKey', { userId: targetUserId, publicKey: key });
+    // --- Chat Room Management ---
+    socket.on('start-chat', ({ targetUser }) => {
+        const user1 = socket.username;
+        const user2 = targetUser;
+        if (!user1 || !user2) return;
+
+        // Find existing session or create a new one
+        let sessionId = [...chatSession.entries()].find(([id, session]) =>
+            (session.user1 === user1 && session.user2 === user2) || (session.user1 === user2 && session.user2 === user1)
+        )?.[0];
+
+        if (!sessionId) {
+            sessionId = `chat_${Date.now()}`;
+            chatSessions.set(sessionId, { user1, user2, messages: [] });
         }
-    });
-
-    // When a user sends a message
-    socket.on('sendMessage', (msgData) => {
-        const senderId = socketToUser.get(socket.id);
-        if (!senderId) return; // Ignore messages from unregistered users
-
-        // Create a full message object with sender, timestamp, etc.
-        const fullMessage = { ...msgData, senderId, timestamp: new Date() };
-        // Store the encrypted message in our in-memory array
-        messages.push(fullMessage);
-
-        // Find the socket ID of the intended recipient
-        const targetSocketId = userToSocket.get(msgData.receiverId);
+        
+        const targetSocketId = [...onlineUsers.entries()].find(([id, name]) => name === user2)?.[0];
         if (targetSocketId) {
-            // Send the encrypted message directly to the recipient's socket
-            io.to(targetSocketId).emit('newMessage', fullMessage);
+            io.to(targetSocketId).emit('chat-invitation', { from: user1, sessionId });
         }
     });
 
-    // When a user disconnects (closes the tab)
+    socket.on('accept-chat', ({ sessionId }) => {
+        const session = chatSessions.get(sessionId);
+        if (!session || (session.user1 !== socket.username && session.user2 !== socket.username)) return;
+        
+        socket.join(sessionId);
+        const otherUser = session.user1 === socket.username ? session.user2 : session.user1;
+        const otherSocketId = [...onlineUsers.entries()].find(([id, name]) => name === otherUser)?.[0];
+        if (otherSocketId) {
+            io.to(otherSocketId).socketsJoin(sessionId);
+            io.to(sessionId).emit('chat-started', { sessionId, with: otherUser });
+        }
+    });
+
+    // --- Messaging & E2EE ---
+    socket.on('send-message', ({ sessionId, encryptedData }) => {
+        const session = chatSessions.get(sessionId);
+        if (!session) return;
+        
+        const fullMessage = { sender: socket.username, ...encryptedData, timestamp: new Date() };
+        session.messages.push(fullMessage);
+        
+        // Broadcast to the room, but not back to the sender
+        socket.to(sessionId).emit('new-message', fullMessage);
+    });
+
+    // --- Typing Indicators ---
+    socket.on('typing-start', (sessionId) => {
+        socket.to(sessionId).emit('user-typing', { user: socket.username, isTyping: true });
+    });
+
+    socket.on('typing-stop', (sessionId) => {
+        socket.to(sessionId).emit('user-typing', { user: socket.username, isTyping: false });
+    });
+
+    // --- Disconnect ---
     socket.on('disconnect', () => {
-        const userId = socketToUser.get(socket.id);
-        if (userId) {
-            console.log(`❌ User disconnected: ${userId}`);
-            // Clean up our maps
-            socketToUser.delete(socket.id);
-            userToSocket.delete(userId);
+        if (socket.username) {
+            onlineUsers.delete(socket.id);
+            io.emit('user-list-updated', Array.from(onlineUsers.values()));
+            console.log(`❌ User disconnected: ${socket.username}`);
         }
     });
 });
 
-// Start the server and listen for incoming connections on the specified port
-const PORT = process.env.PORT || 3000; // Use the port from environment variable or default to 3000
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`🚀 Server running at http://localhost:${PORT}`);
+    console.log(`🚀 Advanced Server running at http://localhost:${PORT}`);
 });
