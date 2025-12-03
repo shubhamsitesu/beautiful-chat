@@ -1,25 +1,13 @@
 {
-  "name": "beautiful-chat",
+  "name": "beautiful-chat-fixed",
   "version": "1.0.0",
-  "description": "A secure, ephemeral, two-user chat and video call application.",
+  "description": "Secure E2EE Chat with Video",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node server.js"
   },
-  "keywords": [
-    "e2ee",
-    "webrtc",
-    "socket.io",
-    "secure-chat"
-  ],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "express": "^4.19.2",
     "socket.io": "^4.7.5"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.0"
   }
 }
