@@ -1,14 +1,14 @@
 {
-  "name": "advanced-chat",
+  "name": "beautiful-chat",
   "version": "1.0.0",
-  "description": "An advanced chat app with E2EE",
+  "description": "A small, E2EE, two-person chat application.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "socket.io": "^4.7.2",
-    "bcrypt": "^5.1.1"
+    "socket.io": "^4.7.2"
   }
 }
