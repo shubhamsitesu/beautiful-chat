@@ -1,7 +1,7 @@
 {
-  "name": "e2ee-ephemeral-chat",
+  "name": "beautiful-chat",
   "version": "1.0.0",
-  "description": "A secure, ephemeral, two-user chat application with E2EE, self-destruct timers, and WebRTC video calls.",
+  "description": "A secure, ephemeral, two-user chat and video call application.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,16 +11,15 @@
     "e2ee",
     "webrtc",
     "socket.io",
-    "ephemeral-chat",
-    "no-database"
+    "secure-chat"
   ],
-  "author": "Your Name",
+  "author": "",
   "license": "ISC",
   "dependencies": {
     "express": "^4.19.2",
     "socket.io": "^4.7.5"
   },
   "devDependencies": {
-    "nodemon": "^3.1.4"
+    "nodemon": "^3.1.0"
   }
 }
