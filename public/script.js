@@ -10,6 +10,7 @@ const messagesDiv = document.getElementById('messages');
 const typingIndicator = document.getElementById('typing-indicator');
 const partnerStatusEl = document.getElementById('partner-status');
 const timerSetting = document.getElementById('timer-setting');
+const clearChatBtn = document.getElementById('clear-chat-btn'); // NEW
 
 // Video Elements
 const mediaContainer = document.getElementById('video-container');
@@ -17,14 +18,22 @@ const localVideo = document.getElementById('local-video');
 const remoteVideo = document.getElementById('remote-video');
 const startCallBtn = document.getElementById('start-call-btn');
 const endCallBtn = document.getElementById('end-call-btn');
+const callNotification = document.getElementById('call-notification'); // NEW
+const acceptCallBtn = document.getElementById('accept-call');         // NEW
+const declineCallBtn = document.getElementById('decline-call');       // NEW
+const callActionsDiv = document.getElementById('call-actions');       // NEW
 
 let myKey = null;
 let myUsername = null;
 let typingTimeout = null;
 let peerConnection = null;
 let localStream = null;
-
 const iceServers = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+// --- DELETE & CONTEXT MENU STATE ---
+let selectedMessageId = null;
+let touchStartTime;
+let touchTimeout;
 
 // --- CRYPTO FUNCTIONS ---
 async function deriveKey(password) {
@@ -87,7 +96,7 @@ function updateMessageStatus(id, status) {
     const el = document.querySelector(`.message[data-id="${id}"] .status-icon`);
     if (!el) return;
     if (status === 'delivered') { el.innerHTML = '✔️✔️'; el.style.color = '#999'; }
-    if (status === 'read') { el.innerHTML = '✔️✔️'; el.style.color = '#34b7f1'; } // Blue ticks
+    if (status === 'read') { el.innerHTML = '✔️✔️'; el.style.color = '#00bcd4'; } // Use accent color
 }
 
 function startTimer(messageId, seconds) {
@@ -111,6 +120,65 @@ function startTimer(messageId, seconds) {
     }, 1000);
 }
 
+// --- NEW DELETION & CONTEXT MENU FUNCTIONS ---
+
+function showContextMenu(x, y, isSender) {
+    document.querySelectorAll('.context-menu').forEach(m => m.remove()); 
+
+    const menu = document.createElement('div');
+    menu.classList.add('context-menu');
+    // Adjust position to prevent going off-screen (basic)
+    menu.style.left = `${x > window.innerWidth - 200 ? window.innerWidth - 200 : x}px`; 
+    menu.style.top = `${y}px`;
+
+    menu.innerHTML += `<button onclick="deleteMessageWrapper('for_me')">Delete for Me</button>`;
+
+    if (isSender) {
+        menu.innerHTML += `<button onclick="deleteMessageWrapper('for_everyone')">Delete for Everyone</button>`;
+    }
+
+    document.body.appendChild(menu);
+
+    // Hide menu on any other click
+    document.addEventListener('click', () => menu.remove(), { once: true });
+}
+
+// Global wrapper function for context menu buttons
+window.deleteMessageWrapper = (scope) => {
+    if (selectedMessageId) {
+        // Send the request to the server
+        socket.emit('delete-message', { messageId: selectedMessageId, scope: scope });
+        selectedMessageId = null;
+        document.querySelectorAll('.context-menu').forEach(m => m.remove()); 
+    }
+}
+
+function handleTouchStart(e) {
+    const msgEl = e.target.closest('.message.sent') || e.target.closest('.message.received');
+    if (msgEl) {
+        touchStartTime = Date.now();
+        touchTimeout = setTimeout(() => {
+            e.preventDefault(); 
+            selectedMessageId = msgEl.getAttribute('data-id');
+            showContextMenu(e.touches[0].clientX, e.touches[0].clientY, msgEl.classList.contains('sent'));
+        }, 500); // 500ms for long press
+    }
+}
+
+function handleTouchEnd(e) {
+    clearTimeout(touchTimeout);
+}
+
+function handleMessageContext(e) {
+    const msgEl = e.target.closest('.message');
+    if (msgEl) {
+        e.preventDefault(); 
+        selectedMessageId = msgEl.getAttribute('data-id');
+        showContextMenu(e.clientX, e.clientY, msgEl.classList.contains('sent'));
+    }
+}
+
+
 // --- EVENT LISTENERS ---
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -126,6 +194,11 @@ loginForm.addEventListener('submit', async (e) => {
     
     loginContainer.classList.add('hidden');
     chatContainer.classList.remove('hidden');
+
+    // Setup listeners for context menu
+    messagesDiv.addEventListener('contextmenu', handleMessageContext);
+    messagesDiv.addEventListener('touchstart', handleTouchStart, { passive: false });
+    messagesDiv.addEventListener('touchend', handleTouchEnd); 
 });
 
 chatForm.addEventListener('submit', async (e) => {
@@ -149,6 +222,13 @@ msgInput.addEventListener('input', () => {
     socket.emit('typing');
 });
 
+clearChatBtn.addEventListener('click', () => {
+    if (confirm("Are you sure you want to clear this entire chat history? This cannot be undone.")) {
+        socket.emit('clear-chat-room');
+    }
+});
+
+
 // --- SOCKET EVENTS ---
 socket.on('receive-message', async ({ user, data, messageId, timer }) => {
     typingIndicator.textContent = '';
@@ -159,12 +239,32 @@ socket.on('receive-message', async ({ user, data, messageId, timer }) => {
 });
 
 socket.on('message-read', (id) => updateMessageStatus(id, 'read'));
-socket.on('message-deleted', (id) => {
+
+// Handler for the SENDER deleting a message (local or for everyone)
+socket.on('message-deleted-local', (id) => {
+    const el = document.querySelector(`.message[data-id="${id}"]`);
+    if (el) {
+        el.textContent = "— You deleted this message —";
+        el.className = "message deleted";
+    }
+});
+
+// Handler for the PARTNER deleting a message (for everyone or self-destruct)
+socket.on('message-deleted-partner', (id) => {
     const el = document.querySelector(`.message[data-id="${id}"]`);
     if (el) {
         el.textContent = "— Partner deleted message —";
         el.className = "message deleted";
     }
+});
+
+// Handler for clearing the entire chat
+socket.on('chat-cleared-local', () => {
+    messagesDiv.innerHTML = '';
+    const div = document.createElement('div');
+    div.classList.add('system-msg');
+    div.textContent = 'Chat history cleared by user.';
+    messagesDiv.appendChild(div);
 });
 
 socket.on('is-typing', (user) => {
@@ -175,12 +275,12 @@ socket.on('is-typing', (user) => {
 
 socket.on('partner-online', (user) => {
     partnerStatusEl.textContent = `🟢 ${user} Online`;
-    partnerStatusEl.style.color = '#25d366';
+    partnerStatusEl.style.color = '#a8e895';
 });
 
 socket.on('partner-offline', () => {
     partnerStatusEl.textContent = '⚫ Offline';
-    partnerStatusEl.style.color = '#999';
+    partnerStatusEl.style.color = '#b3e5fc';
 });
 
 socket.on('system-message', (msg) => {
@@ -192,14 +292,16 @@ socket.on('system-message', (msg) => {
 
 socket.on('error-message', (msg) => alert(msg));
 
-
 // --- WEBRTC VIDEO CALL LOGIC ---
 async function setupMedia() {
     try {
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localVideo.srcObject = localStream;
         return true;
-    } catch(e) { alert("Camera Access Denied"); return false; }
+    } catch(e) { 
+        alert("Camera Access Denied or not available. Cannot start call."); 
+        return false; 
+    }
 }
 
 function createPeer(isCaller, targetId) {
@@ -223,36 +325,71 @@ function createPeer(isCaller, targetId) {
     }
 }
 
+// Function to reset all call UI elements
+function resetCallUI() {
+    if(peerConnection) peerConnection.close();
+    if(localStream) localStream.getTracks().forEach(t => t.stop());
+    peerConnection = null;
+    localStream = null;
+    mediaContainer.classList.add('hidden');
+    callNotification.classList.add('hidden');
+    startCallBtn.classList.remove('hidden');
+    endCallBtn.classList.add('hidden');
+    callActionsDiv.classList.remove('hidden');
+}
+
+
 startCallBtn.addEventListener('click', async () => {
     if(await setupMedia()) {
         createPeer(true, null);
-        startCallBtn.classList.add('hidden');
+        callActionsDiv.classList.add('hidden'); // Hide all actions
         endCallBtn.classList.remove('hidden');
     }
 });
 
 endCallBtn.addEventListener('click', () => {
-    if(peerConnection) peerConnection.close();
-    if(localStream) localStream.getTracks().forEach(t => t.stop());
-    mediaContainer.classList.add('hidden');
-    startCallBtn.classList.remove('hidden');
-    endCallBtn.classList.add('hidden');
+    resetCallUI();
     socket.emit('end-call');
 });
 
-socket.on('call-offer', async ({offer, sender, senderId}) => {
-    if(confirm(`${sender} is calling... Accept?`)) {
-        if(await setupMedia()) {
-            createPeer(false, senderId);
-            await peerConnection.setRemoteDescription(offer);
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            socket.emit('call-answer', { answer, receiverId: senderId });
-            mediaContainer.classList.remove('hidden');
-            startCallBtn.classList.add('hidden');
-            endCallBtn.classList.remove('hidden');
-        }
+// ACCEPT CALL BUTTON from notification
+acceptCallBtn.addEventListener('click', async () => {
+    const { offer, senderId } = acceptCallBtn.callData; // Data stored temporarily on the button
+    
+    if(await setupMedia()) {
+        createPeer(false, senderId);
+        await peerConnection.setRemoteDescription(offer);
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit('call-answer', { answer, receiverId: senderId });
+        
+        callNotification.classList.add('hidden');
+        mediaContainer.classList.remove('hidden');
+        startCallBtn.classList.add('hidden');
+        endCallBtn.classList.remove('hidden');
+    } else {
+        // If media fails, decline the call
+        socket.emit('end-call');
+        resetCallUI();
     }
+});
+
+// DECLINE CALL BUTTON from notification
+declineCallBtn.addEventListener('click', () => {
+    socket.emit('end-call'); // Send a signal to decline (will trigger end-call on both sides)
+    resetCallUI();
+});
+
+
+// INCOMING CALL OFFER (Shows Notification Popup)
+socket.on('call-offer', async ({offer, sender, senderId}) => {
+    callActionsDiv.classList.add('hidden'); // Hide original buttons
+
+    // Store call data on the button element for use in the accept handler
+    acceptCallBtn.callData = { offer, senderId }; 
+    
+    document.getElementById('caller-name').textContent = sender;
+    callNotification.classList.remove('hidden');
 });
 
 socket.on('call-answer', async ({answer}) => {
@@ -264,10 +401,6 @@ socket.on('ice-candidate', async (candidate) => {
 });
 
 socket.on('end-call', () => {
-    alert('Call Ended');
-    if(peerConnection) peerConnection.close();
-    if(localStream) localStream.getTracks().forEach(t => t.stop());
-    mediaContainer.classList.add('hidden');
-    startCallBtn.classList.remove('hidden');
-    endCallBtn.classList.add('hidden');
+    // Alert removed for cleaner UX
+    resetCallUI();
 });
