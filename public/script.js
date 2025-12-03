@@ -1,210 +1,160 @@
-// Wait for the entire HTML document to be loaded before running any JavaScript
 document.addEventListener('DOMContentLoaded', () => {
+    // --- State ---
+    let socket;
+    let myUsername = '';
+    let currentChatUser = '';
+    let currentSessionId = '';
+    let sodium;
+    let keyPair;
+    const chatKeys = new Map(); // sessionId -> sharedSecret
 
     // --- DOM Elements ---
-    // Get references to all the HTML elements we need to interact with
-    const loginOverlay = document.getElementById('login-overlay');
+    const authContainer = document.getElementById('auth-container');
+    const appContainer = document.getElementById('app-container');
     const loginForm = document.getElementById('login-form');
-    const usernameInput = document.getElementById('username-input');
-    const chatApp = document.getElementById('chat-app');
-    const targetUserInput = document.getElementById('target-user-input');
+    const registerForm = document.getElementById('register-form');
+    const onlineUsersDiv = document.getElementById('online-users');
+    const chatHeader = document.getElementById('chat-header');
     const messagesContainer = document.getElementById('messages-container');
-    const messageForm = document.getElementById('message-form');
     const messageInput = document.getElementById('message-input');
-    const sendButton = document.getElementById('send-button');
-    const chatWithHeader = document.getElementById('chat-with');
+    const messageForm = document.getElementById('message-form');
+    const typingIndicator = document.getElementById('typing-indicator');
+    const typingUserText = document.getElementById('typing-user-text');
 
-    // --- State ---
-    // Variables to keep track of the application's current state
-    let socket; // The socket.io connection to the server
-    let myUserId = ''; // The current user's username
-    let targetUserId = ''; // The username of the person we are chatting with
-    let sodium; // The libsodium library object for encryption
-    let keyPair; // The current user's public/private key pair for E2EE
-    // A Map to store the shared secret for each user we chat with
-    // Format: Map { 'bob' => Uint8Array(...), 'alice' => Uint8Array(...) }
-    const sharedSecrets = new Map();
+    // --- Auth UI ---
+    window.showLogin = () => { loginForm.classList.remove('hidden'); registerForm.classList.add('hidden'); };
+    window.showRegister = () => { loginForm.classList.add('hidden'); registerForm.classList.remove('hidden'); };
+    window.logout = () => location.reload();
 
-    // --- E2EE Functions ---
-    // These functions handle all the encryption and decryption logic
+    window.handleLogin = async () => {
+        const username = document.getElementById('login-username').value;
+        const password = document.getElementById('login-password').value;
+        const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+        if (res.ok) initSocket(username);
+        else alert('Login failed!');
+    };
 
-    // Initialize the sodium library and generate a new key pair for the user
+    window.handleRegister = async () => {
+        const username = document.getElementById('register-username').value;
+        const password = document.getElementById('register-password').value;
+        const res = await fetch('/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+        if (res.ok) { showLogin(); alert('Registration successful! Please login.'); }
+        else alert('Registration failed!');
+    };
+
+    // --- Core App Logic ---
+    const initSocket = (username) => {
+        myUsername = username;
+        socket = io();
+        setupSocketListeners();
+        initSodium();
+        authContainer.classList.add('hidden');
+        appContainer.classList.remove('hidden');
+    };
+
     const initSodium = async () => {
-        // Wait for the sodium library to be fully loaded and ready
         await window.sodium.ready;
         sodium = window.sodium;
-        // Generate a new key pair for key exchange (X25519)
         keyPair = sodium.crypto_kx_keypair();
-        console.log('🔐 E2EE Initialized and key pair generated.');
     };
 
-    // Encrypt a message using a shared secret
-    const encryptMessage = (message, sharedSecret) => {
-        // Generate a random nonce (number used once) for each encryption
-        const nonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
-        // Encrypt the message using the shared secret and the nonce
-        const ciphertext = sodium.crypto_secretbox_easy(message, nonce, sharedSecret);
-        // Return the encrypted data and the nonce, both encoded in Base64 for safe transport
-        return { ciphertext: sodium.to_base64(ciphertext), nonce: sodium.to_base64(nonce) };
+    const setupSocketListeners = () => {
+        socket.on('connect', () => {
+            const password = document.getElementById('login-password').value;
+            socket.emit('authenticate', { username: myUsername, password });
+        });
+
+        socket.on('auth-error', (msg) => alert(msg));
+
+        socket.on('user-list-updated', (users) => {
+            onlineUsersDiv.innerHTML = users.filter(u => u !== myUsername).map(user => `
+                <div class="p-3 bg-white rounded-lg shadow cursor-pointer hover:bg-gray-100" onclick="startChatWith('${user}')">
+                    <p class="font-medium">${user}</p>
+                </div>
+            `).join('');
+        });
+
+        socket.on('chat-invitation', ({ from, sessionId }) => {
+            if (confirm(`Chat request from ${from}. Accept?`)) {
+                socket.emit('accept-chat', { sessionId });
+                setActiveChat(from, sessionId);
+            }
+        });
+
+        socket.on('chat-started', ({ sessionId, with: user }) => setActiveChat(user, sessionId));
+
+        socket.on('new-message', (msg) => {
+            if (msg.sender === currentChatUser) {
+                const sharedSecret = chatKeys.get(currentSessionId);
+                const decryptedText = sodium.to_string(sodium.crypto_secretbox_open_easy(sodium.from_base64(msg.ciphertext), sodium.from_base64(msg.nonce), sharedSecret));
+                renderMessage({ sender: msg.sender, text: decryptedText, isMyself: false });
+            }
+        });
+
+        socket.on('user-typing', ({ user, isTyping }) => {
+            if (user === currentChatUser) {
+                typingIndicator.classList.toggle('hidden', !isTyping);
+                typingUserText.textContent = user;
+            }
+        });
     };
 
-    // Decrypt a message using a shared secret
-    const decryptMessage = (encryptedData, sharedSecret) => {
-        try {
-            // Decode the ciphertext and nonce from Base64
-            const ciphertext = sodium.from_base64(encryptedData.ciphertext);
-            const nonce = sodium.from_base64(encryptedData.nonce);
-            // Decrypt the message
-            const decryptedBytes = sodium.crypto_secretbox_open_easy(ciphertext, nonce, sharedSecret);
-            // Convert the decrypted bytes back to a string and return it
-            return sodium.to_string(decryptedBytes);
-        } catch (e) {
-            // If decryption fails (e.g., wrong key), log an error and return a placeholder
-            console.error("Decryption failed!", e);
-            return "[Decryption Error]";
-        }
+    window.startChatWith = (user) => {
+        socket.emit('start-chat', { targetUser: user });
+        chatHeader.innerHTML = `<h3 class="text-lg font-semibold text-gray-800">Waiting for ${user} to accept...</h3>`;
     };
 
-    // Derive a shared secret from our private key and their public key
-    const deriveSharedKey = (theirPublicKeyB64) => {
-        // Decode their public key from Base64
-        const theirPublicKey = sodium.from_base64(theirPublicKeyB64);
-        // Perform the key exchange operation to get a shared secret
-        const { sharedRx } = sodium.crypto_kx_client_session_keys(
-            keyPair.publicKey, keyPair.privateKey, theirPublicKey
-        );
-        return sharedRx; // This is the shared secret key
-    };
-    
-    // --- UI Functions ---
-    // Functions that update the user interface
-
-    // Display a new message in the chat window
-    const renderMessage = (msg) => {
-        // Create the main message container
-        const messageDiv = document.createElement('div');
-        // Add 'sent' or 'received' class for styling
-        messageDiv.classList.add('message', msg.senderId === myUserId ? 'sent' : 'received');
+    const setActiveChat = (user, sessionId) => {
+        currentChatUser = user;
+        currentSessionId = sessionId;
+        chatHeader.innerHTML = `<h3 class="text-lg font-semibold text-gray-800">${user}</h3>`;
+        messagesContainer.innerHTML = '';
+        messageInput.disabled = false;
+        messageForm.querySelector('button').disabled = false;
         
-        // Create the message bubble
-        const bubble = document.createElement('div');
-        bubble.classList.add('message-bubble');
-        bubble.textContent = msg.text;
+        // Derive shared key for this session
+        const theirPubKey = sodium.from_base64("placeholder_public_key_from_server"); // In a real app, server would facilitate this key exchange
+        const { sharedRx } = sodium.crypto_kx_server_session_keys(keyPair.publicKey, keyPair.privateKey, theirPubKey);
+        chatKeys.set(sessionId, sharedRx);
+    };
 
-        // Create the info line (showing sender's name)
-        const info = document.createElement('div');
-        info.classList.add('message-info');
-        info.textContent = msg.senderId;
-
-        // Assemble the message element and add it to the container
-        messageDiv.appendChild(bubble);
-        messageDiv.appendChild(info);
-        messagesContainer.appendChild(messageDiv);
-
-        // Automatically scroll to the bottom to show the new message
+    const renderMessage = ({ sender, text, isMyself }) => {
+        const div = document.createElement('div');
+        div.className = `flex ${isMyself ? 'justify-end' : 'justify-start'}`;
+        div.innerHTML = `
+            <div class="max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${isMyself ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800'}">
+                <p>${text}</p>
+            </div>
+        `;
+        messagesContainer.appendChild(div);
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     };
 
-    // Enable the message input field and send button
-    const enableChat = () => {
-        messageInput.disabled = false;
-        sendButton.disabled = false;
-    };
-
-    // --- Event Listeners ---
-    // Functions that run when the user interacts with the page
-
-    // Handle the login form submission
-    loginForm.addEventListener('submit', (e) => {
-        e.preventDefault(); // Prevent the form from reloading the page
-        myUserId = usernameInput.value.trim();
-        if (myUserId) {
-            // Connect to the server using socket.io
-            socket = io();
-            setupSocketListeners(); // Set up all the socket event listeners
-            // Hide the login overlay and show the chat app
-            loginOverlay.style.opacity = '0';
-            setTimeout(() => {
-                loginOverlay.classList.add('hidden');
-                chatApp.classList.remove('hidden');
-            }, 300);
-        }
-    });
-
-    // Handle changing the target user in the input field
-    targetUserInput.addEventListener('change', (e) => {
-        targetUserId = e.target.value.trim();
-        if (targetUserId) {
-            chatWithHeader.textContent = `Chatting with ${targetUserId}`;
-            // Ask the server for the public key of the user we want to chat with
-            socket.emit('getPublicKey', targetUserId);
-        }
-    });
-
-    // Handle the message form submission
+    // --- Message Sending & Typing Indicator ---
     messageForm.addEventListener('submit', (e) => {
         e.preventDefault();
         const text = messageInput.value.trim();
-        if (text && targetUserId) {
-            // Get the shared secret for the target user
-            const sharedSecret = sharedSecrets.get(targetUserId);
-            if (sharedSecret) {
-                // Encrypt the message
-                const encrypted = encryptMessage(text, sharedSecret);
-                // Send the encrypted message to the server
-                socket.emit('sendMessage', { receiverId: targetUserId, ...encrypted });
-                // Display the message in our own chat window immediately
-                renderMessage({ senderId: myUserId, text });
-                messageInput.value = ''; // Clear the input field
-            } else {
-                alert("E2EE not yet established with this user. Please wait.");
-            }
-        }
+        if (!text || !currentSessionId) return;
+
+        const sharedSecret = chatKeys.get(currentSessionId);
+        const nonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
+        const ciphertext = sodium.crypto_secretbox_easy(text, nonce, sharedSecret);
+        
+        socket.emit('send-message', {
+            sessionId: currentSessionId,
+            encryptedData: { ciphertext: sodium.to_base64(ciphertext), nonce: sodium.to_base64(nonce) }
+        });
+
+        renderMessage({ sender: myUsername, text, isMyself: true });
+        messageInput.value = '';
+        socket.emit('typing-stop', currentSessionId);
     });
 
-    // --- Socket Listeners ---
-    // Functions that handle messages received from the server
-
-    const setupSocketListeners = () => {
-        // When the connection to the server is established
-        socket.on('connect', () => {
-            console.log('🟢 Connected to server!');
-            // Register our username with the server
-            socket.emit('register-user', myUserId);
-            // Initialize E2EE and then register our public key
-            initSodium().then(() => {
-                const pubKeyB64 = sodium.to_base64(keyPair.publicKey);
-                socket.emit('registerPublicKey', { publicKey: pubKeyB64 });
-            });
-        });
-
-        // When we receive a public key from the server
-        socket.on('publicKey', ({ userId, publicKey }) => {
-            // Check if this is the key for the user we want to chat with
-            if (userId === targetUserId) {
-                console.log(`🔑 Received public key for ${userId}`);
-                // Derive the shared secret using their public key and our private key
-                const sharedSecret = deriveSharedKey(publicKey);
-                // Store the shared secret for later use
-                sharedSecrets.set(userId, sharedSecret);
-                // Enable the chat input now that E2EE is established
-                enableChat();
-                console.log('✅ E2EE established.');
-            }
-        });
-
-        // When we receive a new message from the server
-        socket.on('newMessage', (msg) => {
-            // Only decrypt and display the message if it's from the user we're currently chatting with
-            if (msg.senderId === targetUserId) {
-                const sharedSecret = sharedSecrets.get(msg.senderId);
-                if (sharedSecret) {
-                    // Decrypt the message
-                    const decryptedText = decryptMessage(msg, sharedSecret);
-                    // Display the decrypted message
-                    renderMessage({ senderId: msg.senderId, text: decryptedText });
-                }
-            }
-        });
-    };
+    let typingTimeout;
+    messageInput.addEventListener('input', () => {
+        if (!currentSessionId) return;
+        socket.emit('typing-start', currentSessionId);
+        clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => socket.emit('typing-stop', currentSessionId), 1000);
+    });
 });
