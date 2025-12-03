@@ -2,13 +2,16 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+// Increased timeout values to help with mobile backgrounding issues
+const io = new Server(server, { 
+    cors: { origin: "*" },
+    pingInterval: 25000, 
+    pingTimeout: 60000 
+});
 
 app.use(express.static(path.join(__dirname, 'public')));
-
 // In-memory buffer to track message status for deletion/tick management
 // Key: messageId, Value: { senderId, roomKey, timer }
 const messageStatus = new Map(); 
@@ -84,9 +87,45 @@ io.on('connection', (socket) => {
     socket.on('self-destruct-complete', (messageId) => {
         const status = messageStatus.get(messageId); 
         if (status) {
-            io.to(status.senderId).emit('message-deleted', messageId);
+            io.to(status.senderId).emit('message-deleted-partner', messageId); // Use generic partner delete signal
             messageStatus.delete(messageId); 
         }
+    });
+    
+    // --- NEW: Delete Message Options (Hold to Delete) ---
+    socket.on('delete-message', ({ messageId, scope }) => {
+        const roomKey = socket.data.room;
+        
+        // 1. Delete for Me (Sender)
+        if (scope === 'for_me' || scope === 'for_everyone') {
+            socket.emit('message-deleted-local', messageId);
+        }
+
+        // 2. Delete for Everyone
+        if (scope === 'for_everyone') {
+            const recipientSocketId = Array.from(io.sockets.adapter.rooms.get(roomKey) || [])
+                .find(id => id !== socket.id);
+            
+            if (recipientSocketId) {
+                io.to(recipientSocketId).emit('message-deleted-partner', messageId);
+            }
+            messageStatus.delete(messageId); 
+        }
+    });
+
+    // --- NEW: Clear Chat ---
+    socket.on('clear-chat-room', () => {
+        const roomKey = socket.data.room;
+        
+        // 1. Clear for the sender
+        socket.emit('chat-cleared-local');
+        
+        // 2. Cleanup server memory for this room
+        messageStatus.forEach((status, id) => {
+            if (status.roomKey === roomKey) {
+                messageStatus.delete(id);
+            }
+        });
     });
 
     socket.on('typing', () => {
@@ -132,6 +171,5 @@ io.on('connection', (socket) => {
         }
     });
 });
-
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
