@@ -10,7 +10,7 @@
 
     <div id="login-container" class="container">
         <h1>🔐 Secure Login</h1>
-        <p>End-to-End Encrypted. No History.</p>
+        <p>End-to-End Encrypted. No History Shubham.</p>
         <form id="login-form">
             <input type="text" id="username" placeholder="Enter Username" required>
             <input type="password" id="password" placeholder="Enter Secret Room Key" required>
@@ -31,7 +31,7 @@
             <div id="call-actions">
                 <button id="start-call-btn" title="Start Video Call">📹</button>
                 <button id="end-call-btn" class="hidden" title="Hang Up">🛑</button>
-                <button id="leave-btn" onclick="location.reload()" title="Leave Chat">🚪</button>
+                <button id="clear-chat-btn" title="Clear Chat History">🗑️</button> <button id="leave-btn" onclick="location.reload()" title="Leave Chat">🚪</button>
             </div>
         </header>
 
@@ -56,6 +56,21 @@
             <button type="submit">Send</button>
         </form>
     </div>
+    
+    <div id="call-notification" class="hidden">
+        <div class="caller-info">
+            <p><span id="caller-name">Partner</span> is calling...</p>
+        </div>
+        <div class="call-controls">
+            <button id="accept-call" title="Accept" class="accept-btn">📞</button>
+            <button id="decline-call" title="Decline" class="decline-btn">🚫</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="script.js"></script>
