@@ -2,18 +2,18 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Beautiful Secure Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Secure E2EE Chat</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
     <div id="login-container" class="container">
-        <h1>Secure Chat</h1>
-        <p>End-to-End Encrypted. No Logs.</p>
+        <h1>🔐 Secure Login</h1>
+        <p>End-to-End Encrypted. No History.</p>
         <form id="login-form">
             <input type="text" id="username" placeholder="Enter Username" required>
-            <input type="password" id="password" placeholder="Enter Secret Password (Room Key)" required>
+            <input type="password" id="password" placeholder="Enter Secret Room Key" required>
             <button type="submit">Enter Chat</button>
         </form>
         <p id="error-msg" class="error"></p>
@@ -21,12 +21,38 @@
 
     <div id="chat-container" class="container hidden">
         <header>
-            <h2 id="chat-header">Encrypted Room</h2>
-            <button id="leave-btn">Leave</button>
+            <div class="header-left">
+                <h2 id="chat-header">Secure Chat</h2>
+                <div id="partner-info">
+                    <span id="partner-status" class="status-offline">Connecting...</span>
+                </div>
+            </div>
+            
+            <div id="call-actions">
+                <button id="start-call-btn" title="Start Video Call">📹</button>
+                <button id="end-call-btn" class="hidden" title="Hang Up">🛑</button>
+                <button id="leave-btn" onclick="location.reload()" title="Leave Chat">🚪</button>
+            </div>
         </header>
+
+        <div id="video-container" class="hidden">
+            <video id="remote-video" autoplay playsinline></video>
+            <video id="local-video" autoplay muted playsinline></video>
+        </div>
+        
         <div id="messages"></div>
+        
+        <div id="typing-indicator"></div>
+
         <form id="chat-form">
-            <input type="text" id="message-input" placeholder="Type a secure message..." autocomplete="off" required>
+            <select id="timer-setting" title="Self-Destruct Timer">
+                <option value="0">⏳ Off</option>
+                <option value="5">5s</option>
+                <option value="10">10s</option>
+                <option value="60">1m</option>
+                <option value="3600">1h</option>
+            </select>
+            <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" required>
             <button type="submit">Send</button>
         </form>
     </div>
