@@ -30,7 +30,6 @@ const io = new Server(server, {
 });
 
 let chatHistory = [];
-// 🔥 NEW: Tracks which User (A or B) is currently connected
 let activeUsers = {}; // { 'socketId': 'UserA' or 'UserB', ... }
 
 // --- SERVER ENCRYPTION (Fallback) ---
@@ -97,7 +96,6 @@ app.use(express.json());
 // --- SOCKET.IO ---
 io.on('connection', (socket) => {
     
-    // 🔥 FIXED AUTHENTICATION AND USER ASSIGNMENT
     socket.on('authenticate-user', ({ password }) => {
         if (password === FIXED_LOGIN_PASSWORD) {
             
@@ -108,7 +106,6 @@ io.on('connection', (socket) => {
                 return; 
             }
             
-            // 1. Determine User Type (A or B) based on who is missing
             const userA_active = Object.values(activeUsers).includes('UserA');
             const userB_active = Object.values(activeUsers).includes('UserB');
             
@@ -119,12 +116,10 @@ io.on('connection', (socket) => {
             } else if (!userB_active) {
                 userType = 'UserB';
             } else {
-                // If both are active, this should only happen if the room size check failed.
                 socket.emit('auth-failure', 'System Error: Both Users Active.');
                 return;
             }
 
-            // 2. Assign and Track
             activeUsers[socket.id] = userType; 
             
             socket.join(FIXED_ROOM_KEY);
@@ -133,7 +128,6 @@ io.on('connection', (socket) => {
 
             socket.emit('auth-success', { username: userType, history: chatHistory });
 
-            // Notify partner
             socket.to(FIXED_ROOM_KEY).emit('partner-online', userType); 
 
         } else {
@@ -141,7 +135,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // E2EE Key Relay
     socket.on('exchange-key', (data) => {
         socket.to(FIXED_ROOM_KEY).emit('exchange-key', {
             key: data.key,
@@ -149,7 +142,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Message Sending
     socket.on('send-message', (data) => {
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
             socket.emit('auth-failure', 'Server Restarted. Please Refresh.');
@@ -158,7 +150,7 @@ io.on('connection', (socket) => {
         
         const message = {
             id: data.messageId,
-            user: socket.data.username, // Use the permanently assigned name
+            user: socket.data.username, 
             text: data.text,
             isE2EE: data.isE2EE || false,
             iv: data.iv || null,
@@ -174,15 +166,28 @@ io.on('connection', (socket) => {
         socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
     });
     
-    // FIXED DISCONNECT: Remove from activeUsers and notify
+    // 🔥 NEW: Typing Indicator Logic (Relay event)
+    socket.on('typing', () => {
+        if (socket.data.room === FIXED_ROOM_KEY) {
+            socket.to(FIXED_ROOM_KEY).emit('partner-typing', socket.data.username);
+        }
+    });
+
+    socket.on('stop-typing', () => {
+        if (socket.data.room === FIXED_ROOM_KEY) {
+            socket.to(FIXED_ROOM_KEY).emit('partner-stop-typing', socket.data.username);
+        }
+    });
+    
     socket.on('disconnect', () => {
         const disconnectedUser = socket.data.username;
         if (disconnectedUser && socket.data.room === FIXED_ROOM_KEY) {
             
-            // 3. Remove user from tracking map
             delete activeUsers[socket.id];
             
-            // Notify partner
+            // 🔥 NEW: Also broadcast stop-typing when user disconnects
+            socket.to(FIXED_ROOM_KEY).emit('partner-stop-typing', disconnectedUser); 
+            
             socket.to(FIXED_ROOM_KEY).emit('partner-offline', disconnectedUser);
         }
     });
