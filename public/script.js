@@ -1,4 +1,5 @@
-const socket = io();
+const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; 
+const socket = io(RENDER_APP_URL);
 
 // UI Elements
 const loginForm = document.getElementById('login-form');
