@@ -105,32 +105,35 @@ io.on('connection', (socket) => {
         
         if (password === FIXED_LOGIN_PASSWORD) {
             
-            // 1. Check for existing partner
-            const currentRoom = io.sockets.adapter.rooms.get(FIXED_ROOM_KEY);
-            const partnerSocketId = Array.from(currentRoom || [])
-                .find(id => id !== socket.id);
+            // 1. Check for existing users in the room
+            const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
-            // 2. Assign identity (UserB if someone is already present)
+            // 🔥 CRITICAL FIX 1: If 2 users are already in the room, deny access.
+            if (currentRoomMembers.length >= 2 && !currentRoomMembers.includes(socket.id)) {
+                socket.emit('auth-failure', 'Chat room is currently full. Try again later.');
+                return; // STOP EXECUTION
+            }
+            
+            // 2. Identify the partner and user type
+            const partnerSocketId = currentRoomMembers.find(id => id !== socket.id);
             const userType = partnerSocketId ? 'UserB' : 'UserA'; 
 
+            // 3. Proceed with joining and sending success
             socket.join(FIXED_ROOM_KEY);
             socket.data.username = userType; 
             socket.data.room = FIXED_ROOM_KEY;
 
-            // 3. Send Auth Success with history
             socket.emit('auth-success', { 
                 username: userType, 
                 history: chatHistory 
             });
 
-            // 4. 🔥 CRITICAL STATUS FIX: Agar partner already online hai, toh naye user ko uska status bhejein
+            // 4. Status updates (Send status to the new user and the existing user)
             if (partnerSocketId) {
                 const partnerUserType = userType === 'UserA' ? 'UserB' : 'UserA';
-                socket.emit('partner-online', partnerUserType);
+                socket.emit('partner-online', partnerUserType); // Send partner's status to new user
             }
-            
-            // 5. Doosre partner ko naye user ke online aane ka signal bhejein
-            socket.to(FIXED_ROOM_KEY).emit('partner-online', userType);
+            socket.to(FIXED_ROOM_KEY).emit('partner-online', userType); // Broadcast new user's status
 
         } else {
             socket.emit('auth-failure', 'Invalid password.');
@@ -139,7 +142,8 @@ io.on('connection', (socket) => {
 
     // MESSAGE SENDING 
     socket.on('send-message', (data) => {
-        if (!socket.data.username) return; 
+        // Check if user is authenticated and has a room
+        if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) return; 
         
         const message = {
             id: data.messageId,
@@ -148,7 +152,10 @@ io.on('connection', (socket) => {
             timestamp: Date.now()
         };
         
+        // Save to history
         saveHistory(message); 
+
+        // 🔥 CRITICAL FIX 2: Message sirf doosre user ko bhejein
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
