@@ -1,3 +1,9 @@
+# Node dependencies
 node_modules/
+
+# CRITICAL SECRETS & DATA 
 .env
+chat_history.json
+
+# Operating System files
 .DS_Store
