@@ -1,9 +1,11 @@
 // public/script.js
 
-// NOTE: Use your actual Render URL
+// --- CRITICAL CONFIGURATION ---
+// NOTE: Change this URL to your actual Render Web Service URL
 const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; 
-const socket = io(RENDER_APP_URL); 
+const socket = io(RENDER_APP_URL, { transports: ['websocket', 'polling'] }); 
 
+// UI Elements
 const loginForm = document.getElementById('login-form');
 const chatForm = document.getElementById('chat-form');
 const messagesDiv = document.getElementById('messages');
@@ -11,7 +13,7 @@ const partnerStatusEl = document.getElementById('partner-status');
 
 let myUsername = null; 
 
-// --- HELPER FUNCTIONS ---
+// --- UI HELPER FUNCTIONS ---
 function addMessage(text, type, user, timestamp, messageId) {
     const div = document.createElement('div');
     div.classList.add('message', type);
@@ -19,6 +21,7 @@ function addMessage(text, type, user, timestamp, messageId) {
 
     const date = new Date(timestamp);
     const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
     const partnerName = myUsername === 'UserA' ? 'UserB' : 'UserA';
     const headerText = user === myUsername ? 'You' : partnerName;
 
@@ -30,15 +33,17 @@ function addMessage(text, type, user, timestamp, messageId) {
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
+    // **AUTO-DELETE LOGIC FOR RECEIVED MESSAGES:**
     if (type === 'received') {
         socket.emit('message-viewed-and-delete', messageId);
+        
         setTimeout(() => {
             if (div.parentNode) {
                 div.style.transition = 'opacity 0.5s';
                 div.style.opacity = '0';
                 setTimeout(() => div.remove(), 500); 
             }
-        }, 3000); 
+        }, 3000); // 3 seconds grace period to read
     }
 }
 
@@ -50,13 +55,15 @@ function loadHistory(history) {
     });
 }
 
-// --- LISTENERS ---
+// --- LOGIN/AUTHENTICATION ---
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault(); 
     const pass = document.getElementById('password').value;
     socket.emit('authenticate-user', { password: pass });
 });
 
+
+// --- CHAT FORM SUBMISSION ---
 chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = document.getElementById('message-input');
@@ -65,15 +72,16 @@ chatForm.addEventListener('submit', async (e) => {
 
     const id = crypto.randomUUID();
     
-    // Send to server
+    // Send message to server
     socket.emit('send-message', { messageId: id, text: text });
 
-    // Show locally
+    // Display immediately for sender
     addMessage(text, 'sent', myUsername, Date.now(), id);
     input.value = '';
 });
 
-// --- EVENTS ---
+
+// --- SOCKET EVENTS ---
 socket.on('auth-success', ({ username, history }) => {
     myUsername = username;
     document.getElementById('login-container').classList.add('hidden');
@@ -88,7 +96,7 @@ socket.on('auth-success', ({ username, history }) => {
 
 socket.on('auth-failure', (msg) => {
     document.getElementById('error-msg').textContent = msg;
-    // 🔥 FIX: Auto-reload if session is lost
+    // 🔥 FIX: Auto-reload if server session is lost
     if (msg.includes('Refresh')) {
         alert(msg);
         location.reload();
