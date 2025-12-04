@@ -1,172 +1,220 @@
-:root {
-    /* Clean, modern palette */
-    --primary: #5c6bc0; /* Indigo/Blue */
-    --bg-color: #f7f7f7; /* Light background */
-    --header-bg: #455a64; /* Dark Slate Header */
-    --sent-bg: #e0f2f1; /* Light Cyan for sent messages */
-    --received-bg: #ffffff; /* White for received messages */
-    --text-color: #212121;
+/* public/style.css */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f0f2f5;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+    color: #333;
 }
 
-/* ------------------------------------------------------------------- */
-/* 🔥 CRITICAL FIX 1: The hidden class ensures that login/chat containers are hidden */
+#app-container {
+    background: white;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    border-radius: 12px;
+    overflow: hidden;
+    width: 100%;
+    max-width: 450px;
+    height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- Login Styles --- */
+#login-container {
+    padding: 40px;
+    text-align: center;
+}
+
+#login-form input {
+    width: 100%;
+    padding: 12px;
+    margin: 10px 0;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    box-sizing: border-box;
+}
+
+#login-form button {
+    width: 100%;
+    padding: 12px;
+    background-color: #007bff; /* Primary Blue */
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-color 0.2s;
+}
+
+#login-form button:hover {
+    background-color: #0056b3;
+}
+
+.error {
+    color: #e53935;
+    margin-top: 15px;
+}
+
+/* --- Chat Styles --- */
+#chat-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+header {
+    padding: 15px;
+    background-color: #1e88e5; /* Blue header */
+    color: white;
+    border-bottom: 1px solid #ccc;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+#chat-header-info {
+    flex-grow: 1;
+}
+
+#chat-header {
+    margin: 0;
+    font-size: 1.2em;
+}
+
+#partner-status {
+    font-size: 0.8em;
+    font-weight: 500;
+}
+
+#timer-control-container {
+    display: flex;
+    align-items: center;
+    font-size: 0.8em;
+}
+
+#delete-timer {
+    padding: 5px 8px;
+    border-radius: 4px;
+    margin-left: 5px;
+    background: #f0f8ff; /* Light blue background for select */
+    color: #333;
+    border: none;
+}
+
+main {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 15px;
+    background-color: #e5eef7; /* Very light blue background */
+}
+
+#messages {
+    display: flex;
+    flex-direction: column;
+}
+
+.message {
+    max-width: 80%;
+    margin-bottom: 10px;
+    padding: 10px 15px;
+    border-radius: 18px;
+    position: relative;
+    box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.1);
+    opacity: 1; 
+    transition: opacity 0.5s ease-out; /* Smooth delete transition */
+}
+
+.message.sent {
+    align-self: flex-end;
+    background-color: #007bff; 
+    color: white;
+    border-bottom-right-radius: 4px;
+}
+
+.message.received {
+    align-self: flex-start;
+    background-color: #ffffff; 
+    color: #333;
+    border: 1px solid #ddd;
+    border-bottom-left-radius: 4px;
+}
+
+.message-header {
+    font-size: 0.8em;
+    font-weight: bold;
+    margin-bottom: 3px;
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.message.received .message-header {
+    color: #1e88e5; /* Blue for received headers */
+}
+
+.message-text {
+    word-wrap: break-word;
+}
+
+.message-time {
+    position: absolute;
+    bottom: 0px;
+    right: 15px;
+    font-size: 0.7em;
+    color: rgba(0, 0, 0, 0.4);
+}
+
+.message.sent .message-time {
+    color: rgba(255, 255, 255, 0.6);
+}
+
+/* --- Footer and Input --- */
+footer {
+    padding: 10px 15px;
+    border-top: 1px solid #ddd;
+    background: white;
+}
+
+#chat-form {
+    display: flex;
+}
+
+#message-input {
+    flex-grow: 1;
+    padding: 10px 15px;
+    border: 1px solid #ccc;
+    border-radius: 20px;
+    margin-right: 10px;
+    font-size: 16px;
+    outline: none;
+}
+
+#chat-form button {
+    padding: 10px 15px;
+    background-color: #28a745; /* Green for send button */
+    color: white;
+    border: none;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+#chat-form button:hover {
+    background-color: #1e7e34;
+}
+
 .hidden {
     display: none !important;
 }
-/* ------------------------------------------------------------------- */
 
-body {
-    font-family: -apple-system, sans-serif;
-    margin: 0;
-    background: #e0e0e0;
-    height: 100vh;
-    overflow: hidden; 
-    color: var(--text-color);
-}
-
-.container {
-    width: 100%;
-    max-width: 480px;
-    height: 100%;
-    margin: 0 auto;
-    background: var(--bg-color);
-    display: flex;
-    flex-direction: column;
-    position: relative;
-    box-shadow: 0 0 10px rgba(0,0,0,0.15);
-}
-
-/* --- LOGIN --- */
-#login-container {
-    justify-content: center;
-    align-items: center;
-    padding: 20px;
-    text-align: center;
-}
-#login-form input, #login-form button {
-    width: 100%;
-    padding: 14px;
-    margin: 10px 0;
-    border-radius: 25px;
-    border: 1px solid #ccc;
-    box-sizing: border-box;
-    font-size: 1rem;
-}
-#login-form button {
-    background: var(--primary);
-    color: white;
-    font-weight: 600;
-    cursor: pointer;
-    border: none;
-    margin-top: 20px;
-}
-.error { color: #d32f2f; margin-top: 10px; }
-
-/* --- HEADER --- */
-header {
-    height: 60px;
-    background: var(--header-bg);
-    color: white;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 15px;
-    flex-shrink: 0;
-    z-index: 10;
-}
-.header-left h2 { font-size: 1.1rem; margin: 0; }
-#partner-status { font-size: 0.8rem; color: #b0bec5; }
-#header-actions button {
-    background: none;
-    border: none;
-    font-size: 1.5rem;
-    cursor: pointer;
-    color: white;
-    margin-left: 10px;
-}
-
-/* --- MESSAGES --- */
-#messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 10px 15px;
-    display: flex;
-    flex-direction: column;
-    /* FIX: Ensure space above the input bar */
-    padding-bottom: 70px; 
-}
-.message {
-    max-width: 85%;
-    padding: 8px 12px;
-    margin-bottom: 8px;
-    border-radius: 18px;
-    font-size: 0.9rem;
-    position: relative;
-    word-wrap: break-word;
-    box-shadow: 0 1px 1px rgba(0,0,0,0.08);
-    transition: opacity 0.5s ease-out; /* For clean auto-delete effect */
-}
-.sent { 
-    align-self: flex-end; 
-    background: var(--sent-bg); 
-    border-bottom-right-radius: 4px;
-    color: #000;
-}
-.received { 
-    align-self: flex-start; 
-    background: var(--received-bg); 
-    border-bottom-left-radius: 4px; 
-    border: 1px solid #eee;
-    color: var(--text-color);
-}
-.message-header {
-    font-size: 0.75rem;
-    font-weight: bold;
-    color: var(--primary);
-    margin-bottom: 2px;
-}
-.message-text {
-    display: block; 
-    padding-right: 45px; /* Space for time */
-}
-.message-time {
-    position: absolute;
-    bottom: 4px;
-    right: 8px;
-    font-size: 0.6rem;
-    color: #9e9e9e;
-}
-
-/* --- FIXED INPUT BAR (FOOTER) --- */
-#chat-form {
-    /* 🔥 CRITICAL MOBILE FIX 2: Remove position: absolute for proper keyboard handling */
-    width: 100%;
-    
-    background: white;
-    padding: 8px 10px;
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    border-top: 1px solid #ddd;
-    flex-shrink: 0; /* Ensures the input bar stays fixed at the bottom inside the flex column */
-    z-index: 20;
-}
-#message-input {
-    flex: 1;
-    padding: 10px 15px;
-    border-radius: 20px;
-    border: 1px solid #ccc;
-    margin: 0 8px 0 0;
-    font-size: 0.95rem;
-}
-#chat-form button {
-    background: var(--primary);
-    color: white;
-    border: none;
-    width: 40px; 
-    height: 40px;
-    border-radius: 50%;
-    cursor: pointer;
-    font-size: 0.9rem;
-    font-weight: bold;
+/* --- Typing Indicator Styles --- */
+#typing-indicator {
+    font-style: italic;
+    color: #888;
+    height: 20px; 
+    margin-top: 5px;
+    padding-left: 5px;
+    font-size: 0.9em;
+    font-weight: 500;
 }
