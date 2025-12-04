@@ -8,7 +8,7 @@ require('dotenv').config();
 
 // --- FIXED CONFIGURATION ---
 const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
-const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; // Must be 32 characters for aes-256-cbc
+const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
 
 if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
     console.error("FATAL ERROR: Secrets not loaded properly. Check CHAT_SECRET_KEY (must be 32 characters).");
@@ -92,7 +92,6 @@ io.on('connection', (socket) => {
             
             const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
-            // Limit to 2 users
             if (currentRoomMembers.length >= 2 && !currentRoomMembers.includes(socket.id)) {
                 socket.emit('auth-failure', 'Room Full (2 Users Max).');
                 return; 
@@ -118,15 +117,11 @@ io.on('connection', (socket) => {
         }
     });
 
-    // MESSAGE SENDING (FINAL FIX with DEBUG LOGS)
+    // MESSAGE SENDING (Cleaned)
     socket.on('send-message', (data) => {
         
-        // --- STEP 1: INCOMING MESSAGE DEBUG ---
-        console.log(`[DEBUG 1] Received message attempt from: ${socket.data.username || 'UNAUTHENTICATED'} (Socket ID: ${socket.id})`);
-
-        // Session Check
+        // Session Check: If data is missing (Server restart), inform client to refresh.
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
-            console.error(`[DEBUG 1.1] BLOCKED: Session data missing for ${socket.id}`);
             socket.emit('auth-failure', 'Server Restarted. Please Refresh Page to Re-login.');
             return; 
         } 
@@ -140,12 +135,6 @@ io.on('connection', (socket) => {
         
         saveHistory(message); 
         
-        // --- STEP 2: BROADCAST DEBUG ---
-        const room = io.sockets.adapter.rooms.get(FIXED_ROOM_KEY);
-        const numClients = room ? room.size : 0;
-        
-        console.log(`[DEBUG 2] Broadcasting message to ${numClients} user(s) in room ${FIXED_ROOM_KEY}`);
-
         // Send to partner (excluding sender)
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
