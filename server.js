@@ -8,11 +8,10 @@ require('dotenv').config();
 
 // --- FIXED CONFIGURATION ---
 const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
-const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; // Must be 32 characters for aes-256-cbc
+const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
 
 if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
-    console.error("FATAL ERROR: Secrets not loaded, or CHAT_SECRET_KEY is not exactly 32 characters.");
-    console.error("Please ensure your .env file has a CHAT_SECRET_KEY value of exactly 32 characters.");
+    console.error("FATAL ERROR: Secrets not loaded properly.");
     process.exit(1); 
 }
 
@@ -24,7 +23,6 @@ const FIXED_ROOM_KEY = 'fixed_chat_room';
 const app = express();
 const server = http.createServer(app);
 
-// 🔥 FIX 1: Add transports for Render stability
 const io = new Server(server, { 
     cors: { origin: "*" },
     transports: ['websocket', 'polling'], 
@@ -33,7 +31,7 @@ const io = new Server(server, {
 
 let chatHistory = [];
 
-// --- ENCRYPTION/DECRYPTION FUNCTIONS ---
+// --- ENCRYPTION FUNCTIONS ---
 function encrypt(text) {
     if (!text) return '';
     const iv = crypto.randomBytes(IV_LENGTH);
@@ -53,40 +51,27 @@ function decrypt(text) {
         let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
         decrypted += decipher.final('utf8');
         return decrypted;
-    } catch (e) {
-        return "Decryption Error";
-    }
+    } catch (e) { return "Decryption Error"; }
 }
 
-// --- PERSISTENCE UTILITIES ---
+// --- PERSISTENCE ---
 function loadHistory() {
     if (!fs.existsSync(CHAT_HISTORY_FILE)) return;
     try {
         const encryptedHistory = JSON.parse(fs.readFileSync(CHAT_HISTORY_FILE, 'utf8'));
-        chatHistory = encryptedHistory.map(msg => ({
-            ...msg,
-            text: decrypt(msg.text)
-        }));
-    } catch (e) {
-        console.error("Error loading history:", e.message);
-        chatHistory = [];
-    }
+        chatHistory = encryptedHistory.map(msg => ({ ...msg, text: decrypt(msg.text) }));
+    } catch (e) { chatHistory = []; }
 }
 
 function saveHistory(message) {
     chatHistory.push(message); 
     const encryptedHistory = chatHistory.map(msg => ({ ...msg, text: encrypt(msg.text) }));
-    try {
-        fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(encryptedHistory, null, 2));
-    } catch (e) {
-        console.error("Error saving chat history:", e);
-    }
+    try { fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(encryptedHistory, null, 2)); } catch (e) {}
 }
 
 function deleteMessageFromHistory(messageId) {
     const initialLength = chatHistory.length;
     chatHistory = chatHistory.filter(msg => msg.id !== messageId);
-    
     if (chatHistory.length < initialLength) {
         const encryptedHistory = chatHistory.map(msg => ({ ...msg, text: encrypt(msg.text) }));
         fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(encryptedHistory, null, 2));
@@ -95,43 +80,33 @@ function deleteMessageFromHistory(messageId) {
 
 loadHistory(); 
 
-// --- EXPRESS SETUP ---
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json()); 
 
-// --- SOCKET.IO LOGIC ---
-
+// --- SOCKET.IO ---
 io.on('connection', (socket) => {
     
-    // AUTHENTICATION (Password Only)
+    // AUTHENTICATION
     socket.on('authenticate-user', ({ password }) => {
-        
         if (password === FIXED_LOGIN_PASSWORD) {
             
-            // 1. Get current members 
             const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
-            // 🔥 FIX 2: Two-User Limit Check
+            // Limit to 2 users
             if (currentRoomMembers.length >= 2 && !currentRoomMembers.includes(socket.id)) {
-                socket.emit('auth-failure', 'Chat room is currently full. Only two users allowed with this password.');
+                socket.emit('auth-failure', 'Room Full (2 Users Max).');
                 return; 
             }
             
-            // 2. Identify user type
             const partnerSocketId = currentRoomMembers.find(id => id !== socket.id);
             const userType = partnerSocketId ? 'UserB' : 'UserA'; 
 
-            // 3. Join room and assign data
             socket.join(FIXED_ROOM_KEY);
             socket.data.username = userType; 
             socket.data.room = FIXED_ROOM_KEY;
 
-            socket.emit('auth-success', { 
-                username: userType, 
-                history: chatHistory 
-            });
+            socket.emit('auth-success', { username: userType, history: chatHistory });
 
-            // 4. Status updates
             if (partnerSocketId) {
                 const partnerUserType = userType === 'UserA' ? 'UserB' : 'UserA';
                 socket.emit('partner-online', partnerUserType); 
@@ -143,10 +118,14 @@ io.on('connection', (socket) => {
         }
     });
 
-    // MESSAGE SENDING 
+    // MESSAGE SENDING (UPDATED FIX)
     socket.on('send-message', (data) => {
-        // Check if authenticated
-        if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) return; 
+        // 🔥 CRITICAL FIX: If server restarted, session is lost. Tell client to refresh.
+        if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
+            console.log("Session lost for user, asking to refresh.");
+            socket.emit('auth-failure', 'Server Restarted. Please Refresh Page to Re-login.');
+            return; 
+        }
         
         const message = {
             id: data.messageId,
@@ -156,12 +135,12 @@ io.on('connection', (socket) => {
         };
         
         saveHistory(message); 
-
-        // 🔥 FIX 3: Send message to the partner (excluding the sender)
+        
+        // Broadcast to partner
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
-    // Auto-Delete after view
+    // Auto-Delete
     socket.on('message-viewed-and-delete', (messageId) => {
         deleteMessageFromHistory(messageId);
         socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
@@ -175,8 +154,5 @@ io.on('connection', (socket) => {
     });
 });
 
-// 🔥 FIX 4: Ensure the server listens on the port provided by Render
-const portToListen = process.env.PORT || 3000; 
-server.listen(portToListen, () => 
-    console.log(`Server running on port ${portToListen}`)
-);
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
