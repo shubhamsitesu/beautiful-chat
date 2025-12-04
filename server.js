@@ -8,10 +8,10 @@ require('dotenv').config();
 
 // --- FIXED CONFIGURATION ---
 const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
-const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
+const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; // Must be 32 characters for aes-256-cbc
 
 if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
-    console.error("FATAL ERROR: Secrets not loaded properly.");
+    console.error("FATAL ERROR: Secrets not loaded properly. Check CHAT_SECRET_KEY (must be 32 characters).");
     process.exit(1); 
 }
 
@@ -23,6 +23,7 @@ const FIXED_ROOM_KEY = 'fixed_chat_room';
 const app = express();
 const server = http.createServer(app);
 
+// Socket.IO Setup with Render stability fix
 const io = new Server(server, { 
     cors: { origin: "*" },
     transports: ['websocket', 'polling'], 
@@ -31,7 +32,7 @@ const io = new Server(server, {
 
 let chatHistory = [];
 
-// --- ENCRYPTION FUNCTIONS ---
+// --- ENCRYPTION/DECRYPTION FUNCTIONS ---
 function encrypt(text) {
     if (!text) return '';
     const iv = crypto.randomBytes(IV_LENGTH);
@@ -54,7 +55,7 @@ function decrypt(text) {
     } catch (e) { return "Decryption Error"; }
 }
 
-// --- PERSISTENCE ---
+// --- PERSISTENCE UTILITIES ---
 function loadHistory() {
     if (!fs.existsSync(CHAT_HISTORY_FILE)) return;
     try {
@@ -83,10 +84,9 @@ loadHistory();
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json()); 
 
-// --- SOCKET.IO ---
+// --- SOCKET.IO LOGIC ---
 io.on('connection', (socket) => {
     
-    // AUTHENTICATION
     socket.on('authenticate-user', ({ password }) => {
         if (password === FIXED_LOGIN_PASSWORD) {
             
@@ -118,9 +118,9 @@ io.on('connection', (socket) => {
         }
     });
 
-    // MESSAGE SENDING (UPDATED FIX)
+    // MESSAGE SENDING (FINAL FIX: Handles Session Loss)
     socket.on('send-message', (data) => {
-        // 🔥 CRITICAL FIX: If server restarted, session is lost. Tell client to refresh.
+        // CRITICAL FIX: If server restarted, session is lost. Send alert to client.
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
             console.log("Session lost for user, asking to refresh.");
             socket.emit('auth-failure', 'Server Restarted. Please Refresh Page to Re-login.');
@@ -136,7 +136,7 @@ io.on('connection', (socket) => {
         
         saveHistory(message); 
         
-        // Broadcast to partner
+        // Broadcast to partner (excluding sender)
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
