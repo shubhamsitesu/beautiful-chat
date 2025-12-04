@@ -1,10 +1,9 @@
 // public/script.js
 
-// --- CRITICAL FIX 1: Explicitly specify the Render URL for WebSocket connection ---
+// NOTE: Use your actual Render URL
 const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; 
 const socket = io(RENDER_APP_URL); 
 
-// UI Elements
 const loginForm = document.getElementById('login-form');
 const chatForm = document.getElementById('chat-form');
 const messagesDiv = document.getElementById('messages');
@@ -12,7 +11,7 @@ const partnerStatusEl = document.getElementById('partner-status');
 
 let myUsername = null; 
 
-// --- UI HELPER FUNCTIONS ---
+// --- HELPER FUNCTIONS ---
 function addMessage(text, type, user, timestamp, messageId) {
     const div = document.createElement('div');
     div.classList.add('message', type);
@@ -20,7 +19,6 @@ function addMessage(text, type, user, timestamp, messageId) {
 
     const date = new Date(timestamp);
     const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
     const partnerName = myUsername === 'UserA' ? 'UserB' : 'UserA';
     const headerText = user === myUsername ? 'You' : partnerName;
 
@@ -32,39 +30,33 @@ function addMessage(text, type, user, timestamp, messageId) {
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
-    // **AUTO-DELETE LOGIC FOR RECEIVED MESSAGES:**
     if (type === 'received') {
         socket.emit('message-viewed-and-delete', messageId);
-        
         setTimeout(() => {
             if (div.parentNode) {
                 div.style.transition = 'opacity 0.5s';
                 div.style.opacity = '0';
                 setTimeout(() => div.remove(), 500); 
             }
-        }, 3000); // 3 seconds grace period to read
+        }, 3000); 
     }
 }
 
 function loadHistory(history) {
     messagesDiv.innerHTML = '';
-    // 🔥 CRITICAL FIX 2: Load ALL messages from history
     history.forEach(msg => {
         const type = msg.user === myUsername ? 'sent' : 'received';
         addMessage(msg.text, type, msg.user, msg.timestamp, msg.id); 
     });
 }
 
-// --- LOGIN/AUTHENTICATION (Password Only) ---
+// --- LISTENERS ---
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault(); 
     const pass = document.getElementById('password').value;
-    
     socket.emit('authenticate-user', { password: pass });
 });
 
-
-// --- CHAT FORM SUBMISSION ---
 chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = document.getElementById('message-input');
@@ -73,18 +65,17 @@ chatForm.addEventListener('submit', async (e) => {
 
     const id = crypto.randomUUID();
     
+    // Send to server
     socket.emit('send-message', { messageId: id, text: text });
 
-    // Display immediately (This is the sender's local display)
+    // Show locally
     addMessage(text, 'sent', myUsername, Date.now(), id);
     input.value = '';
 });
 
-
-// --- SOCKET EVENTS ---
+// --- EVENTS ---
 socket.on('auth-success', ({ username, history }) => {
     myUsername = username;
-    // UI Change: Hide login, show chat
     document.getElementById('login-container').classList.add('hidden');
     document.getElementById('chat-container').classList.remove('hidden');
     
@@ -92,20 +83,22 @@ socket.on('auth-success', ({ username, history }) => {
     document.getElementById('chat-header').textContent = `Chat with ${partner} (${username})`;
     
     loadHistory(history);
-    
-    // Initial status check: Agar server ne partner ka status nahi bheja, toh ise default par rakhein
     partnerStatusEl.textContent = 'Connecting...';
 });
 
 socket.on('auth-failure', (msg) => {
     document.getElementById('error-msg').textContent = msg;
+    // 🔥 FIX: Auto-reload if session is lost
+    if (msg.includes('Refresh')) {
+        alert(msg);
+        location.reload();
+    }
 });
 
 socket.on('receive-message', (msg) => {
     addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id);
 });
 
-// Clean delete signal from server (Sender's view cleanup)
 socket.on('message-autodeleted-clean', (id) => {
     const el = document.querySelector(`.message[data-id="${id}"]`);
     if (el && el.classList.contains('sent')) {
@@ -116,14 +109,12 @@ socket.on('message-autodeleted-clean', (id) => {
 });
 
 socket.on('partner-online', (user) => {
-    // Status Update
     const partnerName = user === myUsername ? 'You' : user;
     partnerStatusEl.textContent = `🟢 ${partnerName} Online`;
     partnerStatusEl.style.color = '#4CAF50';
 });
 
 socket.on('partner-offline', (user) => {
-    // Status Update
     const partnerName = user === myUsername ? 'You' : user;
     partnerStatusEl.textContent = `⚫ ${partnerName} Offline`;
     partnerStatusEl.style.color = '#aaa';
