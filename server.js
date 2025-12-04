@@ -4,21 +4,19 @@ const { Server } = require('socket.io');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto'); 
-require('dotenv').config(); // Load secrets from Render's Environment Variables
+require('dotenv').config();
 
-// --- FIXED CONFIGURATION (CRITICAL) ---
+// --- FIXED CONFIGURATION ---
 const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
 const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
 
-// Check if secrets are loaded correctly
 if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY) {
-    console.error("FATAL ERROR: Secrets (CHAT_LOGIN_PASSWORD or CHAT_SECRET_KEY) not loaded from Environment Variables. Please check Render dashboard.");
+    console.error("FATAL ERROR: Secrets not loaded from Environment Variables.");
     process.exit(1); 
 }
 
 const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16; 
-
 const CHAT_HISTORY_FILE = 'chat_history.json';
 const FIXED_ROOM_KEY = 'fixed_chat_room'; 
 
@@ -58,10 +56,8 @@ function decrypt(text) {
 }
 
 // --- PERSISTENCE UTILITIES ---
-
 function loadHistory() {
     if (!fs.existsSync(CHAT_HISTORY_FILE)) return;
-    
     try {
         const encryptedHistory = JSON.parse(fs.readFileSync(CHAT_HISTORY_FILE, 'utf8'));
         chatHistory = encryptedHistory.map(msg => ({
@@ -69,17 +65,14 @@ function loadHistory() {
             text: decrypt(msg.text)
         }));
     } catch (e) {
-        console.error("Error loading history (File may be corrupt/empty):", e.message);
+        console.error("Error loading history:", e.message);
         chatHistory = [];
     }
 }
 
 function saveHistory(message) {
     chatHistory.push(message); 
-    const encryptedHistory = chatHistory.map(msg => ({
-        ...msg,
-        text: encrypt(msg.text)
-    }));
+    const encryptedHistory = chatHistory.map(msg => ({ ...msg, text: encrypt(msg.text) }));
     try {
         fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(encryptedHistory, null, 2));
     } catch (e) {
@@ -110,36 +103,36 @@ io.on('connection', (socket) => {
     // AUTHENTICATION (Password Only)
     socket.on('authenticate-user', ({ password }) => {
         
-        // [DEBUG LOG 1] Check if the authentication event is received.
-        console.log(`[DEBUG] 1. Auth attempt received from socket: ${socket.id}`); 
-        
         if (password === FIXED_LOGIN_PASSWORD) {
             
-            // [DEBUG LOG 2] Check if the password comparison succeeded.
-            console.log(`[DEBUG] 2. Password Matched for socket: ${socket.id}`); 
-
-            // Assign identity based on who is present
-            const partnerId = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || [])
+            // 1. Check for existing partner
+            const currentRoom = io.sockets.adapter.rooms.get(FIXED_ROOM_KEY);
+            const partnerSocketId = Array.from(currentRoom || [])
                 .find(id => id !== socket.id);
             
-            const userType = partnerId ? 'UserB' : 'UserA'; 
+            // 2. Assign identity (UserB if someone is already present)
+            const userType = partnerSocketId ? 'UserB' : 'UserA'; 
 
             socket.join(FIXED_ROOM_KEY);
             socket.data.username = userType; 
             socket.data.room = FIXED_ROOM_KEY;
 
+            // 3. Send Auth Success with history
             socket.emit('auth-success', { 
                 username: userType, 
                 history: chatHistory 
             });
 
-            // [DEBUG LOG 3] Check if auth-success event was successfully emitted.
-            console.log(`[DEBUG] 3. Auth Success emitted for User: ${userType}`); 
-
+            // 4. 🔥 CRITICAL STATUS FIX: Agar partner already online hai, toh naye user ko uska status bhejein
+            if (partnerSocketId) {
+                const partnerUserType = userType === 'UserA' ? 'UserB' : 'UserA';
+                socket.emit('partner-online', partnerUserType);
+            }
+            
+            // 5. Doosre partner ko naye user ke online aane ka signal bhejein
             socket.to(FIXED_ROOM_KEY).emit('partner-online', userType);
+
         } else {
-            // [DEBUG LOG 4] Check if password failed.
-            console.log("[DEBUG] 4. Password Failed (Sent 'Invalid Password')."); 
             socket.emit('auth-failure', 'Invalid password.');
         }
     });
@@ -156,7 +149,6 @@ io.on('connection', (socket) => {
         };
         
         saveHistory(message); 
-
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
