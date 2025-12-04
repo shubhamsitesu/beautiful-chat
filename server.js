@@ -11,7 +11,7 @@ const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD;
 const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
 
 if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
-    console.error("FATAL ERROR: Secrets not loaded properly. Check .env file.");
+    console.error("FATAL ERROR: Secrets not loaded properly.");
     process.exit(1); 
 }
 
@@ -23,7 +23,6 @@ const FIXED_ROOM_KEY = 'fixed_chat_room';
 const app = express();
 const server = http.createServer(app);
 
-// Socket.IO Setup
 const io = new Server(server, { 
     cors: { origin: "*" },
     transports: ['websocket', 'polling'], 
@@ -32,7 +31,7 @@ const io = new Server(server, {
 
 let chatHistory = [];
 
-// --- SERVER-SIDE ENCRYPTION (For Offline History) ---
+// --- SERVER ENCRYPTION (Fallback) ---
 function encryptServerSide(text) {
     if (!text) return '';
     const iv = crypto.randomBytes(IV_LENGTH);
@@ -60,8 +59,6 @@ function loadHistory() {
     if (!fs.existsSync(CHAT_HISTORY_FILE)) return;
     try {
         const encryptedHistory = JSON.parse(fs.readFileSync(CHAT_HISTORY_FILE, 'utf8'));
-        // Decrypt server-side messages for history loading
-        // E2EE messages remain encrypted blobs (readable only if key persists, which it won't on refresh)
         chatHistory = encryptedHistory.map(msg => {
             if (msg.isE2EE) return msg; 
             return { ...msg, text: decryptServerSide(msg.text) };
@@ -71,13 +68,10 @@ function loadHistory() {
 
 function saveHistory(message) {
     chatHistory.push(message); 
-    
-    // Encrypt normal messages for disk storage
     const storageFormat = chatHistory.map(msg => {
-        if (msg.isE2EE) return msg; // Already encrypted by client
+        if (msg.isE2EE) return msg; 
         return { ...msg, text: encryptServerSide(msg.text) };
     });
-
     try { fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2)); } catch (e) {}
 }
 
@@ -106,9 +100,8 @@ io.on('connection', (socket) => {
             
             const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
-            // 2-User Limit
             if (currentRoomMembers.length >= 2 && !currentRoomMembers.includes(socket.id)) {
-                socket.emit('auth-failure', 'Room Full (2 Users Max).');
+                socket.emit('auth-failure', 'Room Full.');
                 return; 
             }
             
@@ -121,7 +114,6 @@ io.on('connection', (socket) => {
 
             socket.emit('auth-success', { username: userType, history: chatHistory });
 
-            // Notify statuses
             if (partnerSocketId) {
                 const partnerUserType = userType === 'UserA' ? 'UserB' : 'UserA';
                 socket.emit('partner-online', partnerUserType); 
@@ -133,7 +125,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // E2EE Key Relay
     socket.on('exchange-key', (data) => {
         socket.to(FIXED_ROOM_KEY).emit('exchange-key', {
             key: data.key,
@@ -141,7 +132,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Message Sending
     socket.on('send-message', (data) => {
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
             socket.emit('auth-failure', 'Server Restarted. Please Refresh.');
@@ -166,11 +156,12 @@ io.on('connection', (socket) => {
         socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
     });
     
-    // 🔥 FIXED DISCONNECT LOGIC
+    // 🔥 FIXED DISCONNECT: Ensure it broadcasts correctly
     socket.on('disconnect', () => {
-        // Ensure we notify the room if a valid user disconnects
-        if (socket.data.username && socket.data.room === FIXED_ROOM_KEY) {
-            socket.to(FIXED_ROOM_KEY).emit('partner-offline', socket.data.username);
+        // We use socket.data because socket has already left the room
+        if (socket.data.room === FIXED_ROOM_KEY) {
+            // Broadcast to the specific room that this user is gone
+            socket.to(FIXED_ROOM_KEY).emit('partner-offline', socket.data.username || 'Partner');
         }
     });
 });
