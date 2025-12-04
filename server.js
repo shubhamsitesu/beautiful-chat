@@ -2,109 +2,168 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto'); 
+require('dotenv').config(); // Load secrets from my's Environment Variables
+
+// --- FIXED CONFIGURATION (CRITICAL) ---
+// Keys are read from my Environment Variables (process.env)
+const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
+const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
+
+// Check if secrets are loaded correctly from my
+if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY) {
+    console.error("FATAL ERROR: Secrets (CHAT_LOGIN_PASSWORD or CHAT_SECRET_KEY) not loaded from Environment Variables. Please check my dashboard.");
+    // If not running on my, provide a fallback message (optional, but good practice)
+    if (!process.env.RENDER) {
+         console.error("If running locally, ensure you have a .env file.");
+    }
+    process.exit(1); 
+}
+
+const ALGORITHM = 'aes-256-cbc';
+const IV_LENGTH = 16; 
+
+const CHAT_HISTORY_FILE = 'chat_history.json';
+const FIXED_ROOM_KEY = 'fixed_chat_room'; 
 
 const app = express();
 const server = http.createServer(app);
 
-// FIX: Increased pingTimeout to 60s to prevent mobile disconnects during screen-off
 const io = new Server(server, { 
     cors: { origin: "*" },
-    pingInterval: 25000,
     pingTimeout: 60000 
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+let chatHistory = [];
 
-// In-memory status tracking (Ephemeral)
-const messageStatus = new Map(); 
+// --- ENCRYPTION/DECRYPTION FUNCTIONS ---
+function encrypt(text) {
+    if (!text) return '';
+    const iv = crypto.randomBytes(IV_LENGTH);
+    const cipher = crypto.createCipheriv(ALGORITHM, Buffer.from(FIXED_SECRET_KEY, 'utf8'), iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    return iv.toString('hex') + ':' + encrypted;
+}
+
+function decrypt(text) {
+    if (!text) return '';
+    try {
+        const parts = text.split(':');
+        const iv = Buffer.from(parts.shift(), 'hex');
+        const encryptedText = Buffer.from(parts.join(':'), 'hex');
+        const decipher = crypto.createDecipheriv(ALGORITHM, Buffer.from(FIXED_SECRET_KEY, 'utf8'), iv);
+        let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (e) {
+        return "Decryption Error";
+    }
+}
+
+// --- PERSISTENCE UTILITIES ---
+
+function loadHistory() {
+    // my file system may not guarantee existence/persistence
+    if (!fs.existsSync(CHAT_HISTORY_FILE)) return;
+    
+    try {
+        const encryptedHistory = JSON.parse(fs.readFileSync(CHAT_HISTORY_FILE, 'utf8'));
+        chatHistory = encryptedHistory.map(msg => ({
+            ...msg,
+            text: decrypt(msg.text)
+        }));
+    } catch (e) {
+        console.error("Error loading history:", e);
+        chatHistory = [];
+    }
+}
+
+function saveHistory(message) {
+    chatHistory.push(message); 
+    const encryptedHistory = chatHistory.map(msg => ({
+        ...msg,
+        text: encrypt(msg.text)
+    }));
+    try {
+        fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(encryptedHistory, null, 2));
+    } catch (e) {
+        console.error("Error saving chat history:", e);
+    }
+}
+
+function deleteMessageFromHistory(messageId) {
+    const initialLength = chatHistory.length;
+    chatHistory = chatHistory.filter(msg => msg.id !== messageId);
+    
+    if (chatHistory.length < initialLength) {
+        const encryptedHistory = chatHistory.map(msg => ({ ...msg, text: encrypt(msg.text) }));
+        // Rewrite file after deletion
+        fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(encryptedHistory, null, 2));
+    }
+}
+
+loadHistory(); 
+
+// --- EXPRESS SETUP ---
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json()); 
+
+// --- SOCKET.IO LOGIC ---
 
 io.on('connection', (socket) => {
     
-    // --- JOIN LOGIC ---
-    socket.on('join-chat', ({ username, roomKey }) => {
-        const room = roomKey; 
-        const users = io.sockets.adapter.rooms.get(room);
-        const numClients = users ? users.size : 0;
+    // AUTHENTICATION (Password Only)
+    socket.on('authenticate-user', ({ password }) => {
+        if (password === FIXED_LOGIN_PASSWORD) {
+            
+            // Assign identity based on who is present
+            const partnerId = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || [])
+                .find(id => id !== socket.id);
+            
+            const userType = partnerId ? 'UserB' : 'UserA'; 
 
-        if (numClients >= 2) {
-            socket.emit('error-message', 'Chat full (2 max).');
-            return;
-        }
+            socket.join(FIXED_ROOM_KEY);
+            socket.data.username = userType; 
+            socket.data.room = FIXED_ROOM_KEY;
 
-        socket.join(room);
-        socket.data.username = username;
-        socket.data.room = room;
-
-        socket.emit('system-message', `You joined as ${username}.`);
-        
-        // Notify partner
-        const partnerId = Array.from(io.sockets.adapter.rooms.get(room) || []).find(id => id !== socket.id);
-        if (partnerId) {
-             const partnerSocket = io.sockets.sockets.get(partnerId);
-             socket.emit('partner-online', partnerSocket.data.username);
-             io.to(partnerId).emit('partner-online', username);
-             io.to(partnerId).emit('system-message', `${username} connected.`);
-        }
-    });
-
-    // --- MESSAGING LOGIC ---
-    socket.on('send-message', ({ encryptedData, messageId, timer }, callback) => {
-        const roomKey = socket.data.room;
-        const recipientSocketId = Array.from(io.sockets.adapter.rooms.get(roomKey) || [])
-            .find(id => id !== socket.id);
-        
-        const isDelivered = recipientSocketId ? true : false;
-        if (typeof callback === 'function') callback(isDelivered);
-
-        if (isDelivered) {
-            messageStatus.set(messageId, { senderId: socket.id, roomKey: roomKey });
-            io.to(recipientSocketId).emit('receive-message', {
-                user: socket.data.username,
-                data: encryptedData,
-                messageId: messageId,
-                timer: timer 
+            socket.emit('auth-success', { 
+                username: userType, 
+                history: chatHistory 
             });
+
+            socket.to(FIXED_ROOM_KEY).emit('partner-online', userType);
+        } else {
+            socket.emit('auth-failure', 'Invalid password.');
         }
     });
 
-    socket.on('message-viewed', (messageId) => {
-        const status = messageStatus.get(messageId); 
-        if (status) io.to(status.senderId).emit('message-read', messageId); 
+    // MESSAGE SENDING 
+    socket.on('send-message', (data) => {
+        const message = {
+            id: data.messageId,
+            user: socket.data.username,
+            text: data.text,
+            timestamp: Date.now()
+        };
+        
+        saveHistory(message); 
+
+        socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
-    // --- DELETION LOGIC ---
-    socket.on('delete-message', ({ messageId, scope }) => {
-        const roomKey = socket.data.room;
-        if (scope === 'for_me' || scope === 'for_everyone') {
-            socket.emit('message-deleted-local', messageId);
-        }
-        if (scope === 'for_everyone') {
-            socket.to(roomKey).emit('message-deleted-partner', messageId);
-        }
+    // Auto-Delete after view
+    socket.on('message-viewed-and-delete', (messageId) => {
+        deleteMessageFromHistory(messageId);
+        socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
     });
-
-    socket.on('clear-chat-room', () => {
-        // Only clears for the requester in this version to prevent abuse
-        socket.emit('chat-cleared-local');
-    });
-
-    socket.on('self-destruct-complete', (messageId) => {
-        const status = messageStatus.get(messageId); 
-        if (status) {
-            io.to(status.senderId).emit('message-deleted-partner', messageId);
-            messageStatus.delete(messageId); 
-        }
-    });
-
-    // --- WEBRTC SIGNALING ---
-    socket.on('call-offer', (data) => socket.to(socket.data.room).emit('call-offer', data));
-    socket.on('call-answer', (data) => socket.to(socket.data.room).emit('call-answer', data));
-    socket.on('ice-candidate', (data) => socket.to(socket.data.room).emit('ice-candidate', data));
-    socket.on('end-call', () => socket.to(socket.data.room).emit('end-call'));
-
-    // --- DISCONNECT ---
+    
+    // Disconnect
     socket.on('disconnect', () => {
-        if (socket.data.room) socket.to(socket.data.room).emit('partner-offline');
+        if (socket.data.room === FIXED_ROOM_KEY) {
+            socket.to(FIXED_ROOM_KEY).emit('partner-offline', socket.data.username);
+        }
     });
 });
 
