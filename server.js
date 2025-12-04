@@ -8,10 +8,10 @@ require('dotenv').config();
 
 // --- FIXED CONFIGURATION ---
 const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
-const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
+const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; // Must be 32 characters for aes-256-cbc
 
-if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY) {
-    console.error("FATAL ERROR: Secrets not loaded from Environment Variables.");
+if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
+    console.error("FATAL ERROR: Secrets not loaded, or CHAT_SECRET_KEY is not exactly 32 characters.");
     process.exit(1); 
 }
 
@@ -25,6 +25,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, { 
     cors: { origin: "*" },
+    transports: ['websocket', 'polling'], // Critical Fix for Render stability
     pingTimeout: 60000 
 });
 
@@ -105,21 +106,20 @@ io.on('connection', (socket) => {
         
         if (password === FIXED_LOGIN_PASSWORD) {
             
-            // 1. Get current members (those who are authenticated and in the room)
+            // 1. Get current members 
             const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
-            // 🔥 CRITICAL FIX 1: Two-User Limit Check
-            // Deny access if 2 members are present AND the current socket is not one of them (i.e., a 3rd person is trying to join).
+            // 🔥 FIX 1: Two-User Limit Check
             if (currentRoomMembers.length >= 2 && !currentRoomMembers.includes(socket.id)) {
                 socket.emit('auth-failure', 'Chat room is currently full. Only two users allowed with this password.');
                 return; 
             }
             
-            // 2. Identify the partner and user type
+            // 2. Identify user type
             const partnerSocketId = currentRoomMembers.find(id => id !== socket.id);
             const userType = partnerSocketId ? 'UserB' : 'UserA'; 
 
-            // 3. Proceed with joining and sending success
+            // 3. Join room and assign data
             socket.join(FIXED_ROOM_KEY);
             socket.data.username = userType; 
             socket.data.room = FIXED_ROOM_KEY;
@@ -132,9 +132,9 @@ io.on('connection', (socket) => {
             // 4. Status updates
             if (partnerSocketId) {
                 const partnerUserType = userType === 'UserA' ? 'UserB' : 'UserA';
-                socket.emit('partner-online', partnerUserType); // Send partner's status to new user
+                socket.emit('partner-online', partnerUserType); 
             }
-            socket.to(FIXED_ROOM_KEY).emit('partner-online', userType); // Broadcast new user's status
+            socket.to(FIXED_ROOM_KEY).emit('partner-online', userType); 
 
         } else {
             socket.emit('auth-failure', 'Invalid password.');
@@ -143,7 +143,7 @@ io.on('connection', (socket) => {
 
     // MESSAGE SENDING 
     socket.on('send-message', (data) => {
-        // Check if user is authenticated and has a room
+        // Check if authenticated
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) return; 
         
         const message = {
@@ -153,10 +153,9 @@ io.on('connection', (socket) => {
             timestamp: Date.now()
         };
         
-        // Save to history
         saveHistory(message); 
 
-        // ✅ CRITICAL FIX 2: Send message to the partner. socket.to(room) ensures it excludes the sender.
+        // 🔥 FIX 2: Send message to the partner (excluding the sender)
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
