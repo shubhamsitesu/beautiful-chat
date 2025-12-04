@@ -105,13 +105,14 @@ io.on('connection', (socket) => {
         
         if (password === FIXED_LOGIN_PASSWORD) {
             
-            // 1. Check for existing users in the room
+            // 1. Get current members (those who are authenticated and in the room)
             const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
-            // 🔥 CRITICAL FIX 1: If 2 users are already in the room, deny access.
+            // 🔥 CRITICAL FIX 1: Two-User Limit Check
+            // Deny access if 2 members are present AND the current socket is not one of them (i.e., a 3rd person is trying to join).
             if (currentRoomMembers.length >= 2 && !currentRoomMembers.includes(socket.id)) {
-                socket.emit('auth-failure', 'Chat room is currently full. Try again later.');
-                return; // STOP EXECUTION
+                socket.emit('auth-failure', 'Chat room is currently full. Only two users allowed with this password.');
+                return; 
             }
             
             // 2. Identify the partner and user type
@@ -128,7 +129,7 @@ io.on('connection', (socket) => {
                 history: chatHistory 
             });
 
-            // 4. Status updates (Send status to the new user and the existing user)
+            // 4. Status updates
             if (partnerSocketId) {
                 const partnerUserType = userType === 'UserA' ? 'UserB' : 'UserA';
                 socket.emit('partner-online', partnerUserType); // Send partner's status to new user
@@ -155,7 +156,7 @@ io.on('connection', (socket) => {
         // Save to history
         saveHistory(message); 
 
-        // 🔥 CRITICAL FIX 2: Message sirf doosre user ko bhejein
+        // ✅ CRITICAL FIX 2: Send message to the partner. socket.to(room) ensures it excludes the sender.
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
