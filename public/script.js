@@ -103,9 +103,6 @@ socket.on('auth-failure', (msg) => {
 });
 
 socket.on('receive-message', (msg) => {
-    // --- STEP 3: RECEIVER DEBUG ---
-    console.log("🔥 [DEBUG 3] SUCCESS: Message received from server. Attempting to display:", msg);
-    
     addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id);
 });
 
