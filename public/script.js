@@ -1,5 +1,8 @@
+
+
+// --- CRITICAL FIX: Explicitly specify the Render URL for WebSocket connection ---
 const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; 
-const socket = io(RENDER_APP_URL);
+const socket = io(RENDER_APP_URL); 
 
 // UI Elements
 const loginForm = document.getElementById('login-form');
@@ -18,7 +21,8 @@ function addMessage(text, type, user, timestamp, messageId) {
     const date = new Date(timestamp);
     const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-    const headerText = user === myUsername ? 'You' : (myUsername === 'UserA' ? 'UserB' : 'UserA');
+    const partnerName = myUsername === 'UserA' ? 'UserB' : 'UserA';
+    const headerText = user === myUsername ? 'You' : partnerName;
 
     div.innerHTML = `
         <div class="message-header">${headerText}</div>
@@ -30,10 +34,8 @@ function addMessage(text, type, user, timestamp, messageId) {
     
     // **AUTO-DELETE LOGIC FOR RECEIVED MESSAGES:**
     if (type === 'received') {
-        // 1. Signal server to remove from chat_history.json (File Delete)
         socket.emit('message-viewed-and-delete', messageId);
         
-        // 2. Remove the message from the client screen (Clean Fade-out)
         setTimeout(() => {
             if (div.parentNode) {
                 div.style.transition = 'opacity 0.5s';
@@ -46,18 +48,16 @@ function addMessage(text, type, user, timestamp, messageId) {
 
 function loadHistory(history) {
     messagesDiv.innerHTML = '';
-    // Load only messages sent by the current user 
+    // 🔥 CRITICAL FIX: Load ALL messages from history
     history.forEach(msg => {
         const type = msg.user === myUsername ? 'sent' : 'received';
-        if (type === 'sent') {
-             addMessage(msg.text, type, msg.user, msg.timestamp, msg.id);
-        }
+        addMessage(msg.text, type, msg.user, msg.timestamp, msg.id); 
     });
 }
 
 // --- LOGIN/AUTHENTICATION (Password Only) ---
 loginForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
+    e.preventDefault(); 
     const pass = document.getElementById('password').value;
     
     socket.emit('authenticate-user', { password: pass });
@@ -84,6 +84,7 @@ chatForm.addEventListener('submit', async (e) => {
 // --- SOCKET EVENTS ---
 socket.on('auth-success', ({ username, history }) => {
     myUsername = username;
+    // UI Change: Hide login, show chat
     document.getElementById('login-container').classList.add('hidden');
     document.getElementById('chat-container').classList.remove('hidden');
     
@@ -91,6 +92,9 @@ socket.on('auth-success', ({ username, history }) => {
     document.getElementById('chat-header').textContent = `Chat with ${partner} (${username})`;
     
     loadHistory(history);
+    
+    // Initial status check: Agar server ne partner ka status nahi bheja, toh ise default par rakhein
+    partnerStatusEl.textContent = 'Connecting...';
 });
 
 socket.on('auth-failure', (msg) => {
@@ -105,7 +109,6 @@ socket.on('receive-message', (msg) => {
 socket.on('message-autodeleted-clean', (id) => {
     const el = document.querySelector(`.message[data-id="${id}"]`);
     if (el && el.classList.contains('sent')) {
-        // Fade out sent message after partner confirms view
         el.style.transition = 'opacity 0.5s';
         el.style.opacity = '0';
         setTimeout(() => el.remove(), 500); 
@@ -113,13 +116,15 @@ socket.on('message-autodeleted-clean', (id) => {
 });
 
 socket.on('partner-online', (user) => {
+    // Status Update
     const partnerName = user === myUsername ? 'You' : user;
     partnerStatusEl.textContent = `🟢 ${partnerName} Online`;
     partnerStatusEl.style.color = '#4CAF50';
 });
 
 socket.on('partner-offline', (user) => {
-     const partnerName = user === myUsername ? 'You' : user;
+    // Status Update
+    const partnerName = user === myUsername ? 'You' : user;
     partnerStatusEl.textContent = `⚫ ${partnerName} Offline`;
     partnerStatusEl.style.color = '#aaa';
 });
