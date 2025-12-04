@@ -11,7 +11,7 @@ const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD;
 const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
 
 if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
-    console.error("FATAL ERROR: Secrets not loaded properly.");
+    console.error("FATAL ERROR: Secrets not loaded properly. Check .env file.");
     process.exit(1); 
 }
 
@@ -23,6 +23,7 @@ const FIXED_ROOM_KEY = 'fixed_chat_room';
 const app = express();
 const server = http.createServer(app);
 
+// Socket.IO Setup
 const io = new Server(server, { 
     cors: { origin: "*" },
     transports: ['websocket', 'polling'], 
@@ -31,7 +32,7 @@ const io = new Server(server, {
 
 let chatHistory = [];
 
-// --- SERVER-SIDE ENCRYPTION (For History/Offline Fallback) ---
+// --- SERVER-SIDE ENCRYPTION (For Offline History) ---
 function encryptServerSide(text) {
     if (!text) return '';
     const iv = crypto.randomBytes(IV_LENGTH);
@@ -59,14 +60,11 @@ function loadHistory() {
     if (!fs.existsSync(CHAT_HISTORY_FILE)) return;
     try {
         const encryptedHistory = JSON.parse(fs.readFileSync(CHAT_HISTORY_FILE, 'utf8'));
-        // NOTE: E2EE messages stored in history cannot be decrypted by server.
-        // They will be sent as-is to client, but client might not be able to read old E2EE messages
-        // after refresh (Perfect Forward Secrecy).
+        // Decrypt server-side messages for history loading
+        // E2EE messages remain encrypted blobs (readable only if key persists, which it won't on refresh)
         chatHistory = encryptedHistory.map(msg => {
-            if (msg.isE2EE) {
-                return msg; // Return encrypted blob for E2EE
-            }
-            return { ...msg, text: decryptServerSide(msg.text) }; // Decrypt normal messages
+            if (msg.isE2EE) return msg; 
+            return { ...msg, text: decryptServerSide(msg.text) };
         });
     } catch (e) { chatHistory = []; }
 }
@@ -74,11 +72,9 @@ function loadHistory() {
 function saveHistory(message) {
     chatHistory.push(message); 
     
-    // Encrypt for disk storage
+    // Encrypt normal messages for disk storage
     const storageFormat = chatHistory.map(msg => {
-        if (msg.isE2EE) {
-            return msg; // Already encrypted by client
-        }
+        if (msg.isE2EE) return msg; // Already encrypted by client
         return { ...msg, text: encryptServerSide(msg.text) };
     });
 
@@ -107,10 +103,12 @@ io.on('connection', (socket) => {
     
     socket.on('authenticate-user', ({ password }) => {
         if (password === FIXED_LOGIN_PASSWORD) {
+            
             const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
+            // 2-User Limit
             if (currentRoomMembers.length >= 2 && !currentRoomMembers.includes(socket.id)) {
-                socket.emit('auth-failure', 'Room Full.');
+                socket.emit('auth-failure', 'Room Full (2 Users Max).');
                 return; 
             }
             
@@ -123,6 +121,7 @@ io.on('connection', (socket) => {
 
             socket.emit('auth-success', { username: userType, history: chatHistory });
 
+            // Notify statuses
             if (partnerSocketId) {
                 const partnerUserType = userType === 'UserA' ? 'UserB' : 'UserA';
                 socket.emit('partner-online', partnerUserType); 
@@ -134,29 +133,27 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 🔥 NEW: E2EE KEY EXCHANGE RELAY
+    // E2EE Key Relay
     socket.on('exchange-key', (data) => {
-        // Relay the public key to the partner in the room
         socket.to(FIXED_ROOM_KEY).emit('exchange-key', {
             key: data.key,
             from: socket.data.username
         });
     });
 
-    // MESSAGE SENDING
+    // Message Sending
     socket.on('send-message', (data) => {
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
             socket.emit('auth-failure', 'Server Restarted. Please Refresh.');
             return; 
         }
         
-        // Data contains: { messageId, text, isE2EE, iv (if E2EE) }
         const message = {
             id: data.messageId,
             user: socket.data.username,
-            text: data.text, // This is CIPHERTEXT if isE2EE is true
+            text: data.text,
             isE2EE: data.isE2EE || false,
-            iv: data.iv || null, // Needed for E2EE decryption
+            iv: data.iv || null,
             timestamp: Date.now()
         };
         
@@ -169,8 +166,10 @@ io.on('connection', (socket) => {
         socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
     });
     
+    // 🔥 FIXED DISCONNECT LOGIC
     socket.on('disconnect', () => {
-        if (socket.data.room === FIXED_ROOM_KEY) {
+        // Ensure we notify the room if a valid user disconnects
+        if (socket.data.username && socket.data.room === FIXED_ROOM_KEY) {
             socket.to(FIXED_ROOM_KEY).emit('partner-offline', socket.data.username);
         }
     });
