@@ -55,7 +55,7 @@ function loadHistory(history) {
     });
 }
 
-// --- LOGIN/AUTHENTICATION ---
+// --- LISTENERS ---
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault(); 
     const pass = document.getElementById('password').value;
@@ -63,7 +63,6 @@ loginForm.addEventListener('submit', async (e) => {
 });
 
 
-// --- CHAT FORM SUBMISSION ---
 chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = document.getElementById('message-input');
@@ -96,7 +95,7 @@ socket.on('auth-success', ({ username, history }) => {
 
 socket.on('auth-failure', (msg) => {
     document.getElementById('error-msg').textContent = msg;
-    // 🔥 FIX: Auto-reload if server session is lost
+    // Auto-reload if server session is lost
     if (msg.includes('Refresh')) {
         alert(msg);
         location.reload();
@@ -104,6 +103,9 @@ socket.on('auth-failure', (msg) => {
 });
 
 socket.on('receive-message', (msg) => {
+    // --- STEP 3: RECEIVER DEBUG ---
+    console.log("🔥 [DEBUG 3] SUCCESS: Message received from server. Attempting to display:", msg);
+    
     addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id);
 });
 
