@@ -13,7 +13,8 @@ let myKeyPair = null;
 let sharedSecret = null;  
 let isE2EEReady = false;  
 
-// --- E2EE CRYPTO ---
+// --- E2EE CRYPTO FUNCTIONS (Web Crypto API) ---
+
 async function generateKeyPair() {
     return window.crypto.subtle.generateKey(
         { name: "ECDH", namedCurve: "P-256" },
@@ -82,13 +83,20 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
         }
     }
 
+    // 🔥 FIX: Determine type based on User assignment (CRITICAL)
+    const messageType = (user === myUsername) ? 'sent' : 'received';
+
     const div = document.createElement('div');
-    div.classList.add('message', type);
+    div.classList.add('message', messageType); // Use the correctly determined type
     div.setAttribute('data-id', messageId); 
 
     const date = new Date(timestamp);
     const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const headerText = user === myUsername ? 'You' : (user === 'UserA' ? 'UserB' : 'UserA');
+    
+    // Partner name is always the one who is NOT me
+    const partnerName = myUsername === 'UserA' ? 'UserB' : 'UserA';
+    const headerText = user === myUsername ? 'You' : partnerName; // Display 'You' or 'PartnerName'
+    
     const lockIcon = isE2EE ? '🔒 ' : '';
 
     div.innerHTML = `
@@ -99,7 +107,8 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
-    if (type === 'received') {
+    // Auto-delete logic only for received messages
+    if (messageType === 'received') { // Use the correctly determined type
         socket.emit('message-viewed-and-delete', messageId);
         setTimeout(() => {
             if (div.parentNode) {
@@ -114,6 +123,7 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
 function loadHistory(history) {
     messagesDiv.innerHTML = '';
     history.forEach(msg => {
+        // Use msg.user for comparison, NOT the generic 'type' variable
         const type = msg.user === myUsername ? 'sent' : 'received';
         addMessage(msg.text, type, msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv); 
     });
@@ -124,6 +134,8 @@ loginForm.addEventListener('submit', async (e) => {
     e.preventDefault(); 
     const pass = document.getElementById('password').value;
     myKeyPair = await generateKeyPair(); 
+    
+    // We no longer pass username; server assigns based on availability
     socket.emit('authenticate-user', { password: pass });
 });
 
@@ -136,7 +148,6 @@ chatForm.addEventListener('submit', async (e) => {
     const id = crypto.randomUUID();
     let payload = { messageId: id, text: rawText, isE2EE: false };
 
-    // 🔥 LOGIC: Only use E2EE if Ready AND Partner is online
     if (isE2EEReady && sharedSecret) {
         const encryptedData = await encryptE2EE(rawText);
         payload.text = encryptedData.text;
@@ -144,7 +155,6 @@ chatForm.addEventListener('submit', async (e) => {
         payload.isE2EE = true;
         addMessage(rawText, 'sent', myUsername, Date.now(), id, true);
     } else {
-        // Fallback to Standard
         addMessage(rawText, 'sent', myUsername, Date.now(), id, false);
     }
     
@@ -157,13 +167,14 @@ socket.on('auth-success', async ({ username, history }) => {
     myUsername = username;
     document.getElementById('login-container').classList.add('hidden');
     document.getElementById('chat-container').classList.remove('hidden');
+    
+    // Display the correct assigned name (UserA or UserB)
     const partner = username === 'UserA' ? 'UserB' : 'UserA';
     document.getElementById('chat-header').textContent = `Chat with ${partner} (${username})`;
     
     loadHistory(history);
     partnerStatusEl.textContent = 'Connecting...';
     
-    // Broadcast my key
     const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
     socket.emit('exchange-key', { key: publicKeyJwk });
 });
@@ -175,7 +186,6 @@ socket.on('exchange-key', async (data) => {
         partnerStatusEl.textContent = "🔒 Secure E2EE Connected";
         partnerStatusEl.style.color = "#2e7d32"; 
         
-        // Handshake Back if needed
         if (data.from !== myUsername && !isE2EEReady) {
              const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
              socket.emit('exchange-key', { key: publicKeyJwk });
@@ -183,27 +193,20 @@ socket.on('exchange-key', async (data) => {
     }
 });
 
-// Partner Online -> Try Handshake
 socket.on('partner-online', async (user) => {
+    // Re-trigger handshake
     const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
     socket.emit('exchange-key', { key: publicKeyJwk });
 });
 
-// 🔥 CRITICAL FIX: FORCE RESET STATUS WHEN PARTNER LEAVES
 socket.on('partner-offline', (user) => {
-    const partnerName = user === myUsername ? 'You' : user;
-    
-    // 1. Force Text Update
+    const partnerName = user === myUsername ? 'You' : (myUsername === 'UserA' ? 'UserB' : 'UserA');
+
     partnerStatusEl.textContent = `⚫ ${partnerName} Offline`;
-    
-    // 2. Force Color Update (Grey)
     partnerStatusEl.style.color = '#aaa';
     
-    // 3. Kill E2EE
     isE2EEReady = false;
     sharedSecret = null; 
-    
-    console.log("Partner went offline. E2EE disabled.");
 });
 
 socket.on('receive-message', (msg) => {
