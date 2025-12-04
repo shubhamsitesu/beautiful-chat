@@ -2,41 +2,57 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Simple Private Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Self-Destruct Chat</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-    <div id="login-container" class="container">
-        <h1>🔐 Enter Private Chat</h1>
-        <form id="login-form">
-            <input type="password" id="password" placeholder="Enter Fixed Secret Password" required>
-            <button type="submit">Enter Chat</button>
-        </form>
-        <p id="error-msg" class="error"></p>
-    </div>
-
-    <div id="chat-container" class="container hidden">
-        <header>
-            <div class="header-left">
-                <h2 id="chat-header">Private Chat</h2>
-                <div id="partner-status">Connecting...</div>
-            </div>
-            <div id="header-actions">
-                <button id="leave-btn" onclick="location.reload()" title="Log Out">🚪</button>
-            </div>
-        </header>
-
-        <div id="messages"></div>
+    <div id="app-container">
         
-        <form id="chat-form">
-            <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" required>
-            <button type="submit">Send</button>
-        </form>
-    </div>
+        <div id="login-container">
+            <h1>🔒 Secure Chat Login</h1>
+            <form id="login-form">
+                <input type="password" id="password" placeholder="Enter Fixed Password" required>
+                <button type="submit">Login</button>
+            </form>
+            <p id="error-msg" class="error"></p>
+        </div>
 
-    <script src="/socket.io/socket.io.js"></script>
+        <div id="chat-container" class="hidden">
+            <header>
+                <div id="chat-header-info">
+                    <h2 id="chat-header">Chat Room</h2>
+                    <span id="partner-status">Connecting...</span>
+                </div>
+                
+                <div id="timer-control-container">
+                    <label for="delete-timer">Self-Destruct Time:</label>
+                    <select id="delete-timer">
+                        <option value="3000">3 Seconds</option>
+                        <option value="10000">10 Seconds</option>
+                        <option value="60000">1 Minute</option>
+                    </select>
+                </div>
+            </header>
+
+            <main>
+                <div id="messages">
+                    </div>
+                
+                <div id="typing-indicator"></div>
+            </main>
+
+            <footer>
+                <form id="chat-form">
+                    <input type="text" id="message-input" placeholder="Type a secure message..." required>
+                    <button type="submit">Send</button>
+                </form>
+            </footer>
+        </div>
+
+    </div>
+    
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="script.js"></script>
 </body>
 </html>
