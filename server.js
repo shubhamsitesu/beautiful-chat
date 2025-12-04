@@ -118,14 +118,18 @@ io.on('connection', (socket) => {
         }
     });
 
-    // MESSAGE SENDING (FINAL FIX: Handles Session Loss)
+    // MESSAGE SENDING (FINAL FIX with DEBUG LOGS)
     socket.on('send-message', (data) => {
-        // CRITICAL FIX: If server restarted, session is lost. Send alert to client.
+        
+        // --- STEP 1: INCOMING MESSAGE DEBUG ---
+        console.log(`[DEBUG 1] Received message attempt from: ${socket.data.username || 'UNAUTHENTICATED'} (Socket ID: ${socket.id})`);
+
+        // Session Check
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
-            console.log("Session lost for user, asking to refresh.");
+            console.error(`[DEBUG 1.1] BLOCKED: Session data missing for ${socket.id}`);
             socket.emit('auth-failure', 'Server Restarted. Please Refresh Page to Re-login.');
             return; 
-        }
+        } 
         
         const message = {
             id: data.messageId,
@@ -136,7 +140,13 @@ io.on('connection', (socket) => {
         
         saveHistory(message); 
         
-        // Broadcast to partner (excluding sender)
+        // --- STEP 2: BROADCAST DEBUG ---
+        const room = io.sockets.adapter.rooms.get(FIXED_ROOM_KEY);
+        const numClients = room ? room.size : 0;
+        
+        console.log(`[DEBUG 2] Broadcasting message to ${numClients} user(s) in room ${FIXED_ROOM_KEY}`);
+
+        // Send to partner (excluding sender)
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
