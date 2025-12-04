@@ -3,59 +3,37 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Secure E2EE Chat</title>
+    <title>Simple Private Chat</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
     <div id="login-container" class="container">
-        <h1>🔐 Secure Login</h1>
-        <p>End-to-End Encrypted. No Database.</p>
+        <h1>🔐 Enter Private Chat</h1>
         <form id="login-form">
-            <input type="text" id="username" placeholder="Enter Username" required>
-            <input type="password" id="password" placeholder="Enter Secret Room Key" required>
+            <input type="password" id="password" placeholder="Enter Fixed Secret Password" required>
             <button type="submit">Enter Chat</button>
         </form>
+        <p id="error-msg" class="error"></p>
     </div>
 
     <div id="chat-container" class="container hidden">
         <header>
             <div class="header-left">
-                <h2 id="chat-header">Secure Chat</h2>
-                <div id="partner-status" class="status-offline">Connecting...</div>
+                <h2 id="chat-header">Private Chat</h2>
+                <div id="partner-status">Connecting...</div>
             </div>
             <div id="header-actions">
-                <button id="start-call-btn">📹</button>
-                <button id="end-call-btn" class="hidden" style="color: #ff4444;">🛑</button>
-                <button id="clear-chat-btn">🗑️</button>
+                <button id="leave-btn" onclick="location.reload()" title="Log Out">🚪</button>
             </div>
         </header>
 
-        <div id="video-container" class="hidden">
-            <video id="remote-video" autoplay playsinline></video>
-            <video id="local-video" autoplay muted playsinline></video>
-        </div>
-
         <div id="messages"></div>
-
+        
         <form id="chat-form">
-            <select id="timer-setting">
-                <option value="0">⏳ Off</option>
-                <option value="5">5s</option>
-                <option value="30">30s</option>
-                <option value="60">1m</option>
-            </select>
             <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" required>
             <button type="submit">Send</button>
         </form>
-    </div>
-
-    <div id="call-notification" class="hidden">
-        <p><span id="caller-name">Partner</span> is calling...</p>
-        <div class="popup-buttons">
-            <button id="accept-call" class="btn-green">📞 Accept</button>
-            <button id="decline-call" class="btn-red">🚫 Decline</button>
-        </div>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
