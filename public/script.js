@@ -1,26 +1,29 @@
 // public/script.js
 
-const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; // UPDATE YOUR URL
+// UPDATE YOUR SERVER URL HERE
+const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; 
 const socket = io(RENDER_APP_URL, { transports: ['websocket', 'polling'] }); 
 
+// References to HTML elements
 const loginForm = document.getElementById('login-form');
 const chatForm = document.getElementById('chat-form');
 const messagesDiv = document.getElementById('messages');
 const partnerStatusEl = document.getElementById('partner-status');
-const messageInput = document.getElementById('message-input'); // 🔥 NEW: Reference for typing
-const deleteTimerSelect = document.getElementById('delete-timer'); // 🔥 NEW: Timer control
-const typingIndicatorEl = document.getElementById('typing-indicator'); // 🔥 NEW: Typing indicator
+const messageInput = document.getElementById('message-input');
+const deleteTimerSelect = document.getElementById('delete-timer'); // New: Timer control
+const typingIndicatorEl = document.getElementById('typing-indicator'); // New: Typing indicator
 
+// Main encryption and user states
 let myUsername = null; 
 let myKeyPair = null;     
 let sharedSecret = null;  
 let isE2EEReady = false;  
 
-// 🔥 NEW: Typing state management
+// Typing state management
 let isTyping = false;
 let timeout = undefined;
 
-// --- E2EE CRYPTO FUNCTIONS ---
+// --- E2EE CRYPTO FUNCTIONS (Web Crypto API) ---
 
 async function generateKeyPair() {
     return window.crypto.subtle.generateKey(
@@ -49,17 +52,32 @@ async function deriveSharedSecret(partnerPublicKeyJwk) {
     } catch(e) { return null; }
 }
 
+// Helper function to safely convert binary ArrayBuffer to Base64 string (Fixes btoa() error)
+const bufferToBase64 = (buffer) => {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+};
+
+// Fixed and secure encryption function
 async function encryptE2EE(text) {
     const enc = new TextEncoder();
-    const iv = window.crypto.getRandomValues(new Uint16Array(12));
+    const iv = window.crypto.getRandomValues(new Uint8Array(12)); 
+    
     const ciphertext = await window.crypto.subtle.encrypt(
         { name: "AES-GCM", iv: iv },
         sharedSecret,
         enc.encode(text)
     );
+
     return { 
-        text: btoa(String.fromCharCode(...new Uint8Array(ciphertext))), 
-        iv: btoa(String.fromCharCode(...iv)) 
+        // Use the safe helper function for Base64 encoding
+        text: bufferToBase64(ciphertext), 
+        iv: bufferToBase64(iv.buffer) 
     };
 }
 
@@ -78,7 +96,8 @@ async function decryptE2EE(b64Cipher, b64Iv) {
     }
 }
 
-// --- UI HELPERS ---
+// --- UI HELPER FUNCTIONS ---
+
 async function addMessage(text, type, user, timestamp, messageId, isE2EE = false, iv = null) {
     let displayText = text;
 
@@ -90,10 +109,11 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
         }
     }
 
+    // Determine message type (sent or received)
     const messageType = (user === myUsername) ? 'sent' : 'received';
 
     const div = document.createElement('div');
-    div.classList.add('message', messageType); 
+    div.classList.add('message', messageType);
     div.setAttribute('data-id', messageId); 
 
     const date = new Date(timestamp);
@@ -112,13 +132,15 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
-    // 🔥 NEW: Get selected delete time
+    // 🔥 NEW: Use selected delete time
     const deleteTime = parseInt(deleteTimerSelect.value);
 
+    // Auto-delete logic only for received messages
     if (messageType === 'received') { 
         socket.emit('message-viewed-and-delete', messageId);
         setTimeout(() => {
             if (div.parentNode) {
+                div.style.transition = 'opacity 0.5s';
                 div.style.opacity = '0';
                 setTimeout(() => div.remove(), 500); 
             }
@@ -135,22 +157,24 @@ function loadHistory(history) {
 }
 
 // --- TYPING INDICATOR LOGIC ---
+
 function typingTimeout() {
     isTyping = false;
-    socket.emit('stop-typing');
+    socket.emit('stop-typing'); // Notify server that typing has stopped
 }
 
 messageInput.addEventListener('input', () => {
     if (!isTyping) {
         isTyping = true;
-        socket.emit('typing');
+        socket.emit('typing'); // Notify server that typing has started
     }
     clearTimeout(timeout);
-    // 1 second delay to send stop-typing
+    // Send stop-typing event after 1 second of inactivity
     timeout = setTimeout(typingTimeout, 1000); 
 });
 
-// --- LISTENERS ---
+// --- EVENT LISTENERS ---
+
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault(); 
     const pass = document.getElementById('password').value;
@@ -171,12 +195,14 @@ chatForm.addEventListener('submit', async (e) => {
     let payload = { messageId: id, text: rawText, isE2EE: false };
 
     if (isE2EEReady && sharedSecret) {
+        // E2EE Encryption
         const encryptedData = await encryptE2EE(rawText);
         payload.text = encryptedData.text;
         payload.iv = encryptedData.iv;
         payload.isE2EE = true;
         addMessage(rawText, 'sent', myUsername, Date.now(), id, true);
     } else {
+        // Server-side Encryption (Fallback)
         addMessage(rawText, 'sent', myUsername, Date.now(), id, false);
     }
     
@@ -185,13 +211,14 @@ chatForm.addEventListener('submit', async (e) => {
 });
 
 // --- SOCKET EVENTS ---
+
 socket.on('auth-success', async ({ username, history }) => {
     myUsername = username;
     document.getElementById('login-container').classList.add('hidden');
     document.getElementById('chat-container').classList.remove('hidden');
     
     const partner = username === 'UserA' ? 'UserB' : 'UserA';
-    document.getElementById('chat-header').textContent = `Chat with ${partner} (${username})`;
+    document.getElementById('chat-header').textContent = `Chat: ${partner} (${username})`;
     
     loadHistory(history);
     partnerStatusEl.textContent = 'Connecting...';
@@ -207,6 +234,7 @@ socket.on('exchange-key', async (data) => {
         partnerStatusEl.textContent = "🔒 Secure E2EE Connected";
         partnerStatusEl.style.color = "#2e7d32"; 
         
+        // If partner sent key first and we weren't ready, send our key back
         if (data.from !== myUsername && !isE2EEReady) {
              const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
              socket.emit('exchange-key', { key: publicKeyJwk });
@@ -215,6 +243,7 @@ socket.on('exchange-key', async (data) => {
 });
 
 socket.on('partner-online', async (user) => {
+    // Re-trigger handshake
     const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
     socket.emit('exchange-key', { key: publicKeyJwk });
 });
@@ -225,6 +254,7 @@ socket.on('partner-offline', (user) => {
     partnerStatusEl.textContent = `⚫ ${partnerName} Offline`;
     partnerStatusEl.style.color = '#aaa';
     
+    // Reset E2EE state
     isE2EEReady = false;
     sharedSecret = null; 
     
@@ -239,7 +269,7 @@ socket.on('receive-message', (msg) => {
     addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv);
 });
 
-// 🔥 NEW: Handle Typing Events
+// NEW: Handle Typing Events
 socket.on('partner-typing', (user) => {
     if (user !== myUsername) {
         const partnerName = myUsername === 'UserA' ? 'UserB' : 'UserA';
@@ -258,6 +288,7 @@ socket.on('auth-failure', (msg) => {
     else document.getElementById('error-msg').textContent = msg;
 });
 
+// Server confirmation for auto-delete
 socket.on('message-autodeleted-clean', (id) => {
     const el = document.querySelector(`.message[data-id="${id}"]`);
     if (el && el.classList.contains('sent')) {
