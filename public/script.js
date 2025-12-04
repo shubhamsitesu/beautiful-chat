@@ -7,13 +7,20 @@ const loginForm = document.getElementById('login-form');
 const chatForm = document.getElementById('chat-form');
 const messagesDiv = document.getElementById('messages');
 const partnerStatusEl = document.getElementById('partner-status');
+const messageInput = document.getElementById('message-input'); // 🔥 NEW: Reference for typing
+const deleteTimerSelect = document.getElementById('delete-timer'); // 🔥 NEW: Timer control
+const typingIndicatorEl = document.getElementById('typing-indicator'); // 🔥 NEW: Typing indicator
 
 let myUsername = null; 
 let myKeyPair = null;     
 let sharedSecret = null;  
 let isE2EEReady = false;  
 
-// --- E2EE CRYPTO FUNCTIONS (Web Crypto API) ---
+// 🔥 NEW: Typing state management
+let isTyping = false;
+let timeout = undefined;
+
+// --- E2EE CRYPTO FUNCTIONS ---
 
 async function generateKeyPair() {
     return window.crypto.subtle.generateKey(
@@ -44,7 +51,7 @@ async function deriveSharedSecret(partnerPublicKeyJwk) {
 
 async function encryptE2EE(text) {
     const enc = new TextEncoder();
-    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const iv = window.crypto.getRandomValues(new Uint16Array(12));
     const ciphertext = await window.crypto.subtle.encrypt(
         { name: "AES-GCM", iv: iv },
         sharedSecret,
@@ -83,19 +90,17 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
         }
     }
 
-    // 🔥 FIX: Determine type based on User assignment (CRITICAL)
     const messageType = (user === myUsername) ? 'sent' : 'received';
 
     const div = document.createElement('div');
-    div.classList.add('message', messageType); // Use the correctly determined type
+    div.classList.add('message', messageType); 
     div.setAttribute('data-id', messageId); 
 
     const date = new Date(timestamp);
     const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     
-    // Partner name is always the one who is NOT me
     const partnerName = myUsername === 'UserA' ? 'UserB' : 'UserA';
-    const headerText = user === myUsername ? 'You' : partnerName; // Display 'You' or 'PartnerName'
+    const headerText = user === myUsername ? 'You' : partnerName; 
     
     const lockIcon = isE2EE ? '🔒 ' : '';
 
@@ -107,43 +112,60 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
-    // Auto-delete logic only for received messages
-    if (messageType === 'received') { // Use the correctly determined type
+    // 🔥 NEW: Get selected delete time
+    const deleteTime = parseInt(deleteTimerSelect.value);
+
+    if (messageType === 'received') { 
         socket.emit('message-viewed-and-delete', messageId);
         setTimeout(() => {
             if (div.parentNode) {
-                div.style.transition = 'opacity 0.5s';
                 div.style.opacity = '0';
                 setTimeout(() => div.remove(), 500); 
             }
-        }, 3000); 
+        }, deleteTime); // Use selected time
     }
 }
 
 function loadHistory(history) {
     messagesDiv.innerHTML = '';
     history.forEach(msg => {
-        // Use msg.user for comparison, NOT the generic 'type' variable
         const type = msg.user === myUsername ? 'sent' : 'received';
         addMessage(msg.text, type, msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv); 
     });
 }
+
+// --- TYPING INDICATOR LOGIC ---
+function typingTimeout() {
+    isTyping = false;
+    socket.emit('stop-typing');
+}
+
+messageInput.addEventListener('input', () => {
+    if (!isTyping) {
+        isTyping = true;
+        socket.emit('typing');
+    }
+    clearTimeout(timeout);
+    // 1 second delay to send stop-typing
+    timeout = setTimeout(typingTimeout, 1000); 
+});
 
 // --- LISTENERS ---
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault(); 
     const pass = document.getElementById('password').value;
     myKeyPair = await generateKeyPair(); 
-    
-    // We no longer pass username; server assigns based on availability
     socket.emit('authenticate-user', { password: pass });
 });
 
 chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const input = document.getElementById('message-input');
-    const rawText = input.value;
+    const rawText = messageInput.value;
     if (!rawText) return;
+
+    // Send stop typing event immediately after sending message
+    clearTimeout(timeout);
+    typingTimeout(); 
 
     const id = crypto.randomUUID();
     let payload = { messageId: id, text: rawText, isE2EE: false };
@@ -159,7 +181,7 @@ chatForm.addEventListener('submit', async (e) => {
     }
     
     socket.emit('send-message', payload);
-    input.value = '';
+    messageInput.value = '';
 });
 
 // --- SOCKET EVENTS ---
@@ -168,7 +190,6 @@ socket.on('auth-success', async ({ username, history }) => {
     document.getElementById('login-container').classList.add('hidden');
     document.getElementById('chat-container').classList.remove('hidden');
     
-    // Display the correct assigned name (UserA or UserB)
     const partner = username === 'UserA' ? 'UserB' : 'UserA';
     document.getElementById('chat-header').textContent = `Chat with ${partner} (${username})`;
     
@@ -194,7 +215,6 @@ socket.on('exchange-key', async (data) => {
 });
 
 socket.on('partner-online', async (user) => {
-    // Re-trigger handshake
     const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
     socket.emit('exchange-key', { key: publicKeyJwk });
 });
@@ -207,10 +227,30 @@ socket.on('partner-offline', (user) => {
     
     isE2EEReady = false;
     sharedSecret = null; 
+    
+    // Clear typing indicator if partner goes offline
+    typingIndicatorEl.textContent = '';
 });
 
 socket.on('receive-message', (msg) => {
+    // Hide typing indicator when message received
+    typingIndicatorEl.textContent = '';
+    
     addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv);
+});
+
+// 🔥 NEW: Handle Typing Events
+socket.on('partner-typing', (user) => {
+    if (user !== myUsername) {
+        const partnerName = myUsername === 'UserA' ? 'UserB' : 'UserA';
+        typingIndicatorEl.textContent = `${partnerName} is typing...`;
+    }
+});
+
+socket.on('partner-stop-typing', (user) => {
+    if (user !== myUsername) {
+        typingIndicatorEl.textContent = '';
+    }
 });
 
 socket.on('auth-failure', (msg) => {
