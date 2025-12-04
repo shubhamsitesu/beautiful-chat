@@ -12,6 +12,7 @@ const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; // Must be 32 characters f
 
 if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
     console.error("FATAL ERROR: Secrets not loaded, or CHAT_SECRET_KEY is not exactly 32 characters.");
+    console.error("Please ensure your .env file has a CHAT_SECRET_KEY value of exactly 32 characters.");
     process.exit(1); 
 }
 
@@ -23,9 +24,10 @@ const FIXED_ROOM_KEY = 'fixed_chat_room';
 const app = express();
 const server = http.createServer(app);
 
+// 🔥 FIX 1: Add transports for Render stability
 const io = new Server(server, { 
     cors: { origin: "*" },
-    transports: ['websocket', 'polling'], // Critical Fix for Render stability
+    transports: ['websocket', 'polling'], 
     pingTimeout: 60000 
 });
 
@@ -109,7 +111,7 @@ io.on('connection', (socket) => {
             // 1. Get current members 
             const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
-            // 🔥 FIX 1: Two-User Limit Check
+            // 🔥 FIX 2: Two-User Limit Check
             if (currentRoomMembers.length >= 2 && !currentRoomMembers.includes(socket.id)) {
                 socket.emit('auth-failure', 'Chat room is currently full. Only two users allowed with this password.');
                 return; 
@@ -155,7 +157,7 @@ io.on('connection', (socket) => {
         
         saveHistory(message); 
 
-        // 🔥 FIX 2: Send message to the partner (excluding the sender)
+        // 🔥 FIX 3: Send message to the partner (excluding the sender)
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
@@ -173,5 +175,8 @@ io.on('connection', (socket) => {
     });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// 🔥 FIX 4: Ensure the server listens on the port provided by Render
+const portToListen = process.env.PORT || 3000; 
+server.listen(portToListen, () => 
+    console.log(`Server running on port ${portToListen}`)
+);
