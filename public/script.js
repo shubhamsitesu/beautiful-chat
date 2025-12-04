@@ -1,6 +1,6 @@
+// public/script.js
 
-
-// --- CRITICAL FIX: Explicitly specify the Render URL for WebSocket connection ---
+// --- CRITICAL FIX 1: Explicitly specify the Render URL for WebSocket connection ---
 const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; 
 const socket = io(RENDER_APP_URL); 
 
@@ -48,7 +48,7 @@ function addMessage(text, type, user, timestamp, messageId) {
 
 function loadHistory(history) {
     messagesDiv.innerHTML = '';
-    // 🔥 CRITICAL FIX: Load ALL messages from history
+    // 🔥 CRITICAL FIX 2: Load ALL messages from history
     history.forEach(msg => {
         const type = msg.user === myUsername ? 'sent' : 'received';
         addMessage(msg.text, type, msg.user, msg.timestamp, msg.id); 
@@ -75,7 +75,7 @@ chatForm.addEventListener('submit', async (e) => {
     
     socket.emit('send-message', { messageId: id, text: text });
 
-    // Display immediately
+    // Display immediately (This is the sender's local display)
     addMessage(text, 'sent', myUsername, Date.now(), id);
     input.value = '';
 });
