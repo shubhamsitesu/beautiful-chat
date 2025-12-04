@@ -1,6 +1,6 @@
 // public/script.js
 
-const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; // UPDATE THIS
+const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; // Change to your URL
 const socket = io(RENDER_APP_URL, { transports: ['websocket', 'polling'] }); 
 
 const loginForm = document.getElementById('login-form');
@@ -9,13 +9,12 @@ const messagesDiv = document.getElementById('messages');
 const partnerStatusEl = document.getElementById('partner-status');
 
 let myUsername = null; 
-let myKeyPair = null;     // My Public/Private Keys
-let sharedSecret = null;  // The secret key combined with partner
-let isE2EEReady = false;  // Flag to check if E2EE is active
+let myKeyPair = null;     
+let sharedSecret = null;  
+let isE2EEReady = false;  
 
-// --- E2EE CRYPTO FUNCTIONS (Browser Native) ---
+// --- E2EE CRYPTO FUNCTIONS ---
 
-// 1. Generate Key Pair (ECDH)
 async function generateKeyPair() {
     return window.crypto.subtle.generateKey(
         { name: "ECDH", namedCurve: "P-256" },
@@ -24,7 +23,6 @@ async function generateKeyPair() {
     );
 }
 
-// 2. Derive Shared Secret (from my Private + Partner's Public)
 async function deriveSharedSecret(partnerPublicKeyJwk) {
     try {
         const partnerPublicKey = await window.crypto.subtle.importKey(
@@ -34,22 +32,19 @@ async function deriveSharedSecret(partnerPublicKeyJwk) {
             false,
             []
         );
-
-        const secret = await window.crypto.subtle.deriveKey(
+        return await window.crypto.subtle.deriveKey(
             { name: "ECDH", public: partnerPublicKey },
             myKeyPair.privateKey,
             { name: "AES-GCM", length: 256 },
             false,
             ["encrypt", "decrypt"]
         );
-        return secret;
     } catch(e) {
-        console.error("Key derivation failed", e);
+        console.error("Key Error", e);
         return null;
     }
 }
 
-// 3. Encrypt Message (AES-GCM)
 async function encryptE2EE(text) {
     const enc = new TextEncoder();
     const iv = window.crypto.getRandomValues(new Uint8Array(12));
@@ -58,43 +53,37 @@ async function encryptE2EE(text) {
         sharedSecret,
         enc.encode(text)
     );
-    
-    // Convert buffer to Base64 string for sending
-    const b64Cipher = btoa(String.fromCharCode(...new Uint8Array(ciphertext)));
-    const b64Iv = btoa(String.fromCharCode(...iv));
-    return { text: b64Cipher, iv: b64Iv };
+    return { 
+        text: btoa(String.fromCharCode(...new Uint8Array(ciphertext))), 
+        iv: btoa(String.fromCharCode(...iv)) 
+    };
 }
 
-// 4. Decrypt Message (AES-GCM)
 async function decryptE2EE(b64Cipher, b64Iv) {
     try {
         const iv = Uint8Array.from(atob(b64Iv), c => c.charCodeAt(0));
         const ciphertext = Uint8Array.from(atob(b64Cipher), c => c.charCodeAt(0));
-        
         const decrypted = await window.crypto.subtle.decrypt(
             { name: "AES-GCM", iv: iv },
             sharedSecret,
             ciphertext
         );
-        
-        const dec = new TextDecoder();
-        return dec.decode(decrypted);
+        return new TextDecoder().decode(decrypted);
     } catch (e) {
-        return "🔒 Encrypted Message (Key changed/lost)";
+        return "🔒 Encrypted (Key Lost/Changed)";
     }
 }
-
 
 // --- UI FUNCTIONS ---
 async function addMessage(text, type, user, timestamp, messageId, isE2EE = false, iv = null) {
     let displayText = text;
 
-    // Decrypt if it's an E2EE message and we have the secret
+    // Decrypt if E2EE
     if (isE2EE && type === 'received') {
         if (sharedSecret && iv) {
             displayText = await decryptE2EE(text, iv);
         } else {
-            displayText = "🔒 Encrypted (Waiting for key...)";
+            displayText = "🔒 Encrypted Message (Cannot read - Key changed)";
         }
     }
 
@@ -105,8 +94,6 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     const date = new Date(timestamp);
     const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const headerText = user === myUsername ? 'You' : (user === 'UserA' ? 'UserB' : 'UserA');
-    
-    // Add Lock Icon for E2EE
     const lockIcon = isE2EE ? '🔒 ' : '';
 
     div.innerHTML = `
@@ -117,7 +104,6 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
-    // Auto-delete logic
     if (type === 'received') {
         socket.emit('message-viewed-and-delete', messageId);
         setTimeout(() => {
@@ -134,18 +120,15 @@ function loadHistory(history) {
     messagesDiv.innerHTML = '';
     history.forEach(msg => {
         const type = msg.user === myUsername ? 'sent' : 'received';
-        // Note: Old E2EE messages from history might not be readable if key changed (Security Feature)
         addMessage(msg.text, type, msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv); 
     });
 }
 
 // --- LOGIC ---
-
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault(); 
     const pass = document.getElementById('password').value;
-    // Generate my keys immediately upon login attempt
-    myKeyPair = await generateKeyPair();
+    myKeyPair = await generateKeyPair(); // Generate keys on login
     socket.emit('authenticate-user', { password: pass });
 });
 
@@ -158,17 +141,17 @@ chatForm.addEventListener('submit', async (e) => {
     const id = crypto.randomUUID();
     let payload = { messageId: id, text: rawText, isE2EE: false };
 
-    // 🔥 HYBRID LOGIC: If E2EE is ready, encrypt locally!
+    // 🔥 LOGIC DECISION:
+    // If Partner is Online AND keys are exchanged -> Use E2EE
+    // If Partner is Offline -> Use Standard (Server) Encryption
     if (isE2EEReady && sharedSecret) {
         const encryptedData = await encryptE2EE(rawText);
         payload.text = encryptedData.text;
         payload.iv = encryptedData.iv;
         payload.isE2EE = true;
-        
-        // Show local message immediately (Plain text for me)
         addMessage(rawText, 'sent', myUsername, Date.now(), id, true);
     } else {
-        // Fallback: Send plain (Server will encrypt for storage)
+        // Fallback to Standard (Readable from history later)
         addMessage(rawText, 'sent', myUsername, Date.now(), id, false);
     }
     
@@ -184,33 +167,47 @@ socket.on('auth-success', async ({ username, history }) => {
     document.getElementById('chat-container').classList.remove('hidden');
     const partner = username === 'UserA' ? 'UserB' : 'UserA';
     document.getElementById('chat-header').textContent = `Chat with ${partner} (${username})`;
+    
     loadHistory(history);
     partnerStatusEl.textContent = 'Connecting...';
     
-    // Broadcast my Public Key to partner to start E2EE
+    // Send my key just in case partner is already there
     const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
     socket.emit('exchange-key', { key: publicKeyJwk });
 });
 
-// Partner sent their key
 socket.on('exchange-key', async (data) => {
-    console.log("Received Public Key from Partner. Establishing E2EE...");
     sharedSecret = await deriveSharedSecret(data.key);
     if (sharedSecret) {
         isE2EEReady = true;
         partnerStatusEl.textContent = "🔒 Secure E2EE Connected";
-        partnerStatusEl.style.color = "#2e7d32"; // Green
+        partnerStatusEl.style.color = "#2e7d32"; 
         
-        // If I haven't sent my key yet (I joined second), send it now
-        const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
-        socket.emit('exchange-key', { key: publicKeyJwk });
+        // If I'm the second one joining, I must reply with my key
+        // We use a small timeout to avoid infinite loops of key exchange
+        if (data.from !== myUsername && !isE2EEReady) {
+             const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
+             socket.emit('exchange-key', { key: publicKeyJwk });
+        }
     }
 });
 
 socket.on('partner-online', async (user) => {
-    // If partner comes online, try to handshake again
+    // Partner came online, try to handshake for E2EE
     const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
     socket.emit('exchange-key', { key: publicKeyJwk });
+});
+
+// 🔥 CRITICAL FIX: Handle Offline Status correctly
+socket.on('partner-offline', (user) => {
+    const partnerName = user === myUsername ? 'You' : user;
+    partnerStatusEl.textContent = `⚫ ${partnerName} Offline`;
+    partnerStatusEl.style.color = '#aaa';
+    
+    // DISABLE E2EE immediately
+    isE2EEReady = false;
+    sharedSecret = null; 
+    // Now subsequent messages will use standard encryption so they can be read later
 });
 
 socket.on('receive-message', (msg) => {
