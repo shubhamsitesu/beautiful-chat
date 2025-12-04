@@ -6,12 +6,12 @@ const fs = require('fs');
 const crypto = require('crypto'); 
 require('dotenv').config();
 
-// --- CONFIGURATION ---
+// --- FIXED CONFIGURATION ---
 const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
 const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
 
 if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
-    console.error("FATAL ERROR: Secrets not loaded properly.");
+    console.error("FATAL ERROR: Secrets not loaded properly. Check .env file.");
     process.exit(1); 
 }
 
@@ -30,6 +30,8 @@ const io = new Server(server, {
 });
 
 let chatHistory = [];
+// 🔥 NEW: Tracks which User (A or B) is currently connected
+let activeUsers = {}; // { 'socketId': 'UserA' or 'UserB', ... }
 
 // --- SERVER ENCRYPTION (Fallback) ---
 function encryptServerSide(text) {
@@ -95,6 +97,7 @@ app.use(express.json());
 // --- SOCKET.IO ---
 io.on('connection', (socket) => {
     
+    // 🔥 FIXED AUTHENTICATION AND USER ASSIGNMENT
     socket.on('authenticate-user', ({ password }) => {
         if (password === FIXED_LOGIN_PASSWORD) {
             
@@ -105,19 +108,32 @@ io.on('connection', (socket) => {
                 return; 
             }
             
-            const partnerSocketId = currentRoomMembers.find(id => id !== socket.id);
-            const userType = partnerSocketId ? 'UserB' : 'UserA'; 
+            // 1. Determine User Type (A or B) based on who is missing
+            const userA_active = Object.values(activeUsers).includes('UserA');
+            const userB_active = Object.values(activeUsers).includes('UserB');
+            
+            let userType;
 
+            if (!userA_active) {
+                userType = 'UserA';
+            } else if (!userB_active) {
+                userType = 'UserB';
+            } else {
+                // If both are active, this should only happen if the room size check failed.
+                socket.emit('auth-failure', 'System Error: Both Users Active.');
+                return;
+            }
+
+            // 2. Assign and Track
+            activeUsers[socket.id] = userType; 
+            
             socket.join(FIXED_ROOM_KEY);
             socket.data.username = userType; 
             socket.data.room = FIXED_ROOM_KEY;
 
             socket.emit('auth-success', { username: userType, history: chatHistory });
 
-            if (partnerSocketId) {
-                const partnerUserType = userType === 'UserA' ? 'UserB' : 'UserA';
-                socket.emit('partner-online', partnerUserType); 
-            }
+            // Notify partner
             socket.to(FIXED_ROOM_KEY).emit('partner-online', userType); 
 
         } else {
@@ -125,6 +141,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // E2EE Key Relay
     socket.on('exchange-key', (data) => {
         socket.to(FIXED_ROOM_KEY).emit('exchange-key', {
             key: data.key,
@@ -132,6 +149,7 @@ io.on('connection', (socket) => {
         });
     });
 
+    // Message Sending
     socket.on('send-message', (data) => {
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
             socket.emit('auth-failure', 'Server Restarted. Please Refresh.');
@@ -140,7 +158,7 @@ io.on('connection', (socket) => {
         
         const message = {
             id: data.messageId,
-            user: socket.data.username,
+            user: socket.data.username, // Use the permanently assigned name
             text: data.text,
             isE2EE: data.isE2EE || false,
             iv: data.iv || null,
@@ -156,12 +174,16 @@ io.on('connection', (socket) => {
         socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
     });
     
-    // 🔥 FIXED DISCONNECT: Ensure it broadcasts correctly
+    // FIXED DISCONNECT: Remove from activeUsers and notify
     socket.on('disconnect', () => {
-        // We use socket.data because socket has already left the room
-        if (socket.data.room === FIXED_ROOM_KEY) {
-            // Broadcast to the specific room that this user is gone
-            socket.to(FIXED_ROOM_KEY).emit('partner-offline', socket.data.username || 'Partner');
+        const disconnectedUser = socket.data.username;
+        if (disconnectedUser && socket.data.room === FIXED_ROOM_KEY) {
+            
+            // 3. Remove user from tracking map
+            delete activeUsers[socket.id];
+            
+            // Notify partner
+            socket.to(FIXED_ROOM_KEY).emit('partner-offline', disconnectedUser);
         }
     });
 });
