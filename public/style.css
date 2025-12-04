@@ -7,9 +7,14 @@
     --received-bg: #ffffff; /* White for received messages */
     --text-color: #212121;
 }
+
+/* ------------------------------------------------------------------- */
+/* 🔥 CRITICAL FIX 1: The hidden class ensures that login/chat containers are hidden */
 .hidden {
     display: none !important;
 }
+/* ------------------------------------------------------------------- */
+
 body {
     font-family: -apple-system, sans-serif;
     margin: 0;
@@ -87,7 +92,7 @@ header {
     padding: 10px 15px;
     display: flex;
     flex-direction: column;
-    /* FIX: Input bar height is approx 60px, so we need padding greater than that */
+    /* FIX: Ensure space above the input bar */
     padding-bottom: 70px; 
 }
 .message {
@@ -134,17 +139,16 @@ header {
 
 /* --- FIXED INPUT BAR (FOOTER) --- */
 #chat-form {
-    /* FIX: position: absolute inside relative container */
-    position: absolute; 
-    bottom: 0;
-    left: 0;
+    /* 🔥 CRITICAL MOBILE FIX 2: Remove position: absolute for proper keyboard handling */
     width: 100%;
+    
     background: white;
     padding: 8px 10px;
     box-sizing: border-box;
     display: flex;
     align-items: center;
     border-top: 1px solid #ddd;
+    flex-shrink: 0; /* Ensures the input bar stays fixed at the bottom inside the flex column */
     z-index: 20;
 }
 #message-input {
