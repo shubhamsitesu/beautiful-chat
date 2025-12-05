@@ -11,18 +11,14 @@ const messagesDiv = document.getElementById('messages');
 const partnerStatusEl = document.getElementById('partner-status');
 const messageInput = document.getElementById('message-input');
 const typingIndicatorEl = document.getElementById('typing-indicator');
-
-// Global Timer Controls (Must match the ID in your index.html)
 const selfDestructTimerSelect = document.getElementById('self-destruct-timer'); 
-let currentSelfDestructTime = 0; // The shared, active timer value (in milliseconds)
 
-// Main encryption and user states
+let currentSelfDestructTime = 0; 
 let myUsername = null; 
 let myKeyPair = null;     
 let sharedSecret = null;  
 let isE2EEReady = false;  
 
-// Typing state management
 let isTyping = false;
 let timeout = undefined;
 
@@ -129,7 +125,7 @@ async function loadState() {
         );
         
         myUsername = state.username;
-        myKeyPair = { privateKey: privateKey }; 
+        myKeyPair = { privateKey: privateKey }; // Temporarily store the private key
         
         return true;
     } catch (e) {
@@ -148,7 +144,7 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
         if (sharedSecret && iv) {
             displayText = await decryptE2EE(text, iv);
         } else {
-            displayText = "🔒 Encrypted (Cannot Read)";
+            displayText = "🔒 Encrypted (Key Lost)";
         }
     }
 
@@ -165,7 +161,6 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     const headerText = user === myUsername ? 'You' : partnerName; 
     
     const lockIcon = isE2EE ? '🔒 ' : '';
-    // Display timer duration if set
     const timerIcon = timerDuration > 0 ? ` ⏱️ ${timerDuration / 1000}s` : '';
 
     div.innerHTML = `
@@ -179,7 +174,6 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     // Apply deletion logic if timer is active
     if (timerDuration > 0) { 
         
-        // Trigger deletion on the client after the timer expires
         setTimeout(() => {
             if (div.parentNode) {
                 div.style.transition = 'opacity 0.5s';
@@ -188,8 +182,6 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
             }
         }, timerDuration); 
 
-        // Inform the server about the deletion (for history cleanup)
-        // This is sent immediately, but the client waits for the timer before deleting locally.
         socket.emit('message-viewed-and-delete', messageId);
     }
 }
@@ -198,7 +190,6 @@ function loadHistory(history) {
     messagesDiv.innerHTML = '';
     history.forEach(msg => {
         const type = msg.user === myUsername ? 'sent' : 'received';
-        // Ensure msg.timerDuration is passed to addMessage
         addMessage(msg.text, type, msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv, msg.timerDuration || 0); 
     });
 }
@@ -225,9 +216,8 @@ messageInput.addEventListener('input', () => {
 if (selfDestructTimerSelect) {
     selfDestructTimerSelect.addEventListener('change', (e) => {
         const newTime = parseInt(e.target.value);
-        // Send the new time to the server to sync with the partner
         socket.emit('set-self-destruct-time', newTime);
-        currentSelfDestructTime = newTime; // Update local state
+        currentSelfDestructTime = newTime; 
     });
 }
 
@@ -235,7 +225,23 @@ if (selfDestructTimerSelect) {
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault(); 
     const pass = document.getElementById('password').value;
-    myKeyPair = await generateKeyPair(); 
+    
+    // 1. Attempt to load existing key state
+    const stateLoaded = await loadState(); // Loads myKeyPair.privateKey
+
+    if (stateLoaded) {
+        // Key found: Create a new key pair combining new Public Key with stored Private Key
+        const freshKeyPair = await generateKeyPair();
+        myKeyPair = { 
+            publicKey: freshKeyPair.publicKey, 
+            privateKey: myKeyPair.privateKey 
+        };
+    } else {
+        // Key not found: Generate a brand new key pair.
+        myKeyPair = await generateKeyPair(); 
+    }
+
+    // 2. Proceed with authentication
     socket.emit('authenticate-user', { password: pass });
 });
 
@@ -252,7 +258,7 @@ chatForm.addEventListener('submit', async (e) => {
         messageId: id, 
         text: rawText, 
         isE2EE: false,
-        timerDuration: currentSelfDestructTime // Send the currently active synchronized duration
+        timerDuration: currentSelfDestructTime 
     };
 
     if (isE2EEReady && sharedSecret) {
@@ -260,7 +266,6 @@ chatForm.addEventListener('submit', async (e) => {
         payload.text = encryptedData.text;
         payload.iv = encryptedData.iv;
         payload.isE2EE = true;
-        // Display the raw text locally with the timer duration
         addMessage(rawText, 'sent', myUsername, Date.now(), id, true, null, currentSelfDestructTime);
     } else {
         addMessage(rawText, 'sent', myUsername, Date.now(), id, false, null, currentSelfDestructTime);
@@ -276,7 +281,6 @@ socket.on('auth-success', async ({ username, history, selfDestructTime }) => {
     myUsername = username;
     await saveState(); 
 
-    // Set the initial timer value from the server
     currentSelfDestructTime = selfDestructTime;
     if (selfDestructTimerSelect) selfDestructTimerSelect.value = selfDestructTime.toString();
     
@@ -289,29 +293,12 @@ socket.on('auth-success', async ({ username, history, selfDestructTime }) => {
     loadHistory(history);
     partnerStatusEl.textContent = 'Connecting...';
     
+    // Send public key for handshake using the key prepared in the login handler
     const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
     socket.emit('exchange-key', { key: publicKeyJwk });
 });
 
-socket.on('reconnect-success', async ({ username, history, selfDestructTime }) => {
-    myUsername = username;
-    
-    // Set the initial timer value from the server
-    currentSelfDestructTime = selfDestructTime;
-    if (selfDestructTimerSelect) selfDestructTimerSelect.value = selfDestructTime.toString();
-
-    document.getElementById('login-container').classList.add('hidden');
-    document.getElementById('chat-container').classList.remove('hidden');
-    
-    const partner = username === 'UserA' ? 'UserB' : 'UserA';
-    document.getElementById('chat-header').textContent = `Chat: ${partner} (${username})`;
-    
-    loadHistory(history);
-    partnerStatusEl.textContent = 'Connecting...';
-    
-    const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
-    socket.emit('exchange-key', { key: publicKeyJwk });
-});
+// REMOVED 'reconnect-success' logic: All successful logins now go through 'auth-success'
 
 socket.on('exchange-key', async (data) => {
     sharedSecret = await deriveSharedSecret(data.key);
@@ -319,15 +306,9 @@ socket.on('exchange-key', async (data) => {
         isE2EEReady = true;
         partnerStatusEl.textContent = "🔒 Secure E2EE Connected";
         partnerStatusEl.style.color = "#2e7d32"; 
-        
-        if (data.from !== myUsername && !isE2EEReady) {
-             const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
-             socket.emit('exchange-key', { key: publicKeyJwk });
-        }
     }
 });
 
-// Sync Timer Setting
 socket.on('sync-self-destruct-time', (newTime) => {
     currentSelfDestructTime = newTime;
     if (selfDestructTimerSelect) {
@@ -342,8 +323,10 @@ socket.on('sync-self-destruct-time', (newTime) => {
 
 socket.on('partner-online', async (user) => {
     // Re-trigger handshake
-    const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
-    socket.emit('exchange-key', { key: publicKeyJwk });
+    if (myKeyPair && myKeyPair.publicKey) {
+        const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
+        socket.emit('exchange-key', { key: publicKeyJwk });
+    }
 });
 
 socket.on('partner-offline', (user) => {
@@ -359,7 +342,6 @@ socket.on('partner-offline', (user) => {
 
 socket.on('receive-message', (msg) => {
     typingIndicatorEl.textContent = '';
-    // Pass the received timer duration to addMessage
     addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv, msg.timerDuration);
 });
 
@@ -377,8 +359,7 @@ socket.on('partner-stop-typing', (user) => {
 });
 
 socket.on('auth-failure', (msg) => {
-    if (msg.includes('Refresh')) location.reload();
-    else document.getElementById('error-msg').textContent = msg;
+    document.getElementById('error-msg').textContent = msg;
     sessionStorage.removeItem(KEY_STORE_NAME); 
 });
 
@@ -393,26 +374,12 @@ socket.on('message-autodeleted-clean', (id) => {
 // --- INITIALIZATION ---
 
 async function attemptAutoLogin() {
-    const stateLoaded = await loadState();
+    // Load state to prime the keys if available, but do not connect automatically.
+    await loadState();
     
-    if (stateLoaded) {
-        
-        const freshKeyPair = await generateKeyPair();
-        myKeyPair = { publicKey: freshKeyPair.publicKey, privateKey: myKeyPair.privateKey };
-
-        const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
-        
-        socket.emit('reconnect-user', { 
-            username: myUsername,
-            key: publicKeyJwk
-        });
-        
-        document.getElementById('login-container').classList.add('hidden');
-        document.getElementById('chat-container').classList.remove('hidden');
-        
-    } else {
-        document.getElementById('login-container').classList.remove('hidden');
-    }
+    // Always show the login container first to enforce password requirement on refresh.
+    document.getElementById('login-container').classList.remove('hidden');
+    document.getElementById('chat-container').classList.add('hidden');
 }
 
 attemptAutoLogin();
