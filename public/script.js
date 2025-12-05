@@ -4,7 +4,7 @@
 const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; 
 const socket = io(RENDER_APP_URL, { transports: ['websocket', 'polling'] }); 
 
-// HTML 
+// HTML तत्वों का संदर्भ
 const loginForm = document.getElementById('login-form');
 const chatForm = document.getElementById('chat-form');
 const messagesDiv = document.getElementById('messages');
@@ -12,13 +12,15 @@ const partnerStatusEl = document.getElementById('partner-status');
 const messageInput = document.getElementById('message-input');
 const deleteTimerSelect = document.getElementById('delete-timer'); 
 const typingIndicatorEl = document.getElementById('typing-indicator'); 
+// फ़ाइल/वॉयस संदर्भ हटा दिए गए हैं
 
+// मुख्य एन्क्रिप्शन और यूज़र स्टेट्स
 let myUsername = null; 
 let myKeyPair = null;     
 let sharedSecret = null;  
 let isE2EEReady = false;  
 
-
+// टाइपिंग स्टेट प्रबंधन
 let isTyping = false;
 let timeout = undefined;
 const KEY_STORE_NAME = 'chat_e2ee_key'; // Local Storage Key
@@ -52,7 +54,7 @@ async function deriveSharedSecret(partnerPublicKeyJwk) {
     } catch(e) { return null; }
 }
 
-// (Fixes btoa() Invalid Character Error)
+// सुरक्षित Base64 रूपांतरण (Fixes btoa() Invalid Character Error)
 const bufferToBase64 = (buffer) => {
     let binary = '';
     const bytes = new Uint8Array(buffer);
@@ -63,7 +65,7 @@ const bufferToBase64 = (buffer) => {
     return btoa(binary);
 };
 
-
+// सुरक्षित एन्क्रिप्शन फ़ंक्शन
 async function encryptE2EE(text) {
     const enc = new TextEncoder();
     const iv = window.crypto.getRandomValues(new Uint8Array(12)); 
@@ -301,7 +303,6 @@ socket.on('partner-online', async (user) => {
     // Re-trigger handshake
     const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
     socket.emit('exchange-key', { key: publicKeyJwk });
-    // P2P Icon Logic Removed
 });
 
 socket.on('partner-offline', (user) => {
@@ -313,7 +314,6 @@ socket.on('partner-offline', (user) => {
     isE2EEReady = false;
     sharedSecret = null; 
     typingIndicatorEl.textContent = '';
-    // P2P Icon Logic Removed
 });
 
 socket.on('receive-message', (msg) => {
@@ -337,6 +337,7 @@ socket.on('partner-stop-typing', (user) => {
 socket.on('auth-failure', (msg) => {
     if (msg.includes('Refresh')) location.reload();
     else document.getElementById('error-msg').textContent = msg;
+    // If auth fails, clear stored keys
     localStorage.removeItem(KEY_STORE_NAME); 
 });
 
@@ -356,10 +357,12 @@ async function attemptAutoLogin() {
     if (stateLoaded) {
         // Use the stored private key for decryption
         
-        // Generate a new keypair (to get a fresh public key for exchange)
-        const newKeyPair = await generateKeyPair();
-        // Overwrite the new private key with the stored private key
-        myKeyPair = { ...newKeyPair, privateKey: myKeyPair.privateKey };
+        // 1. Generate a NEW keypair to get a fresh PUBLIC key for the handshake.
+        const freshKeyPair = await generateKeyPair();
+        
+        // 2. OVERWRITE the temporary PRIVATE key with the stored, original PRIVATE key.
+        //    This ensures our decryption capability is retained.
+        myKeyPair = { publicKey: freshKeyPair.publicKey, privateKey: myKeyPair.privateKey };
 
         const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
         
