@@ -36,7 +36,7 @@ const io = new Server(server, {
 let chatHistory = [];
 let activeUsers = {}; 
 let userKeys = {}; 
-let selfDestructTime = 3000; // Default: 3 seconds
+let selfDestructTime = 10000; // Default: 10 seconds
 
 // --- SERVER ENCRYPTION (Fallback & History Storage) ---
 
