@@ -1,7 +1,7 @@
 // public/script.js
 
 // UPDATE YOUR SERVER URL HERE
-const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; // Change to your Render URL
+const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; // Change this to your Render URL
 const socket = io(RENDER_APP_URL, { transports: ['websocket', 'polling'] }); 
 
 // References to HTML elements
@@ -12,9 +12,9 @@ const partnerStatusEl = document.getElementById('partner-status');
 const messageInput = document.getElementById('message-input');
 const typingIndicatorEl = document.getElementById('typing-indicator');
 
-// 🔥 NEW: Global Timer Controls
-const selfDestructTimerSelect = document.getElementById('self-destruct-timer'); // The new control (must exist in HTML)
-let currentSelfDestructTime = 0; // The shared, active timer value
+// Global Timer Controls (Must match the ID in your index.html)
+const selfDestructTimerSelect = document.getElementById('self-destruct-timer'); 
+let currentSelfDestructTime = 0; // The shared, active timer value (in milliseconds)
 
 // Main encryption and user states
 let myUsername = null; 
@@ -26,7 +26,7 @@ let isE2EEReady = false;
 let isTyping = false;
 let timeout = undefined;
 
-// SESSION STORAGE KEY
+// SESSION STORAGE KEY (Data deleted when tab/browser closes)
 const KEY_STORE_NAME = 'chat_e2ee_key_session'; 
 
 // --- E2EE CRYPTO FUNCTIONS (Web Crypto API) ---
@@ -165,7 +165,7 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     const headerText = user === myUsername ? 'You' : partnerName; 
     
     const lockIcon = isE2EE ? '🔒 ' : '';
-    // 🔥 NEW: Display timer duration if set
+    // Display timer duration if set
     const timerIcon = timerDuration > 0 ? ` ⏱️ ${timerDuration / 1000}s` : '';
 
     div.innerHTML = `
@@ -176,8 +176,9 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
-    // 🔥 NEW: Use global timer for deletion
+    // Apply deletion logic if timer is active
     if (timerDuration > 0) { 
+        
         // Trigger deletion on the client after the timer expires
         setTimeout(() => {
             if (div.parentNode) {
@@ -188,6 +189,7 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
         }, timerDuration); 
 
         // Inform the server about the deletion (for history cleanup)
+        // This is sent immediately, but the client waits for the timer before deleting locally.
         socket.emit('message-viewed-and-delete', messageId);
     }
 }
@@ -196,7 +198,8 @@ function loadHistory(history) {
     messagesDiv.innerHTML = '';
     history.forEach(msg => {
         const type = msg.user === myUsername ? 'sent' : 'received';
-        addMessage(msg.text, type, msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv, msg.timerDuration); 
+        // Ensure msg.timerDuration is passed to addMessage
+        addMessage(msg.text, type, msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv, msg.timerDuration || 0); 
     });
 }
 
@@ -218,13 +221,13 @@ messageInput.addEventListener('input', () => {
 
 // --- EVENT LISTENERS ---
 
-// 🔥 NEW: Timer Select Change Listener
+// Timer Select Change Listener
 if (selfDestructTimerSelect) {
     selfDestructTimerSelect.addEventListener('change', (e) => {
         const newTime = parseInt(e.target.value);
         // Send the new time to the server to sync with the partner
         socket.emit('set-self-destruct-time', newTime);
-        currentSelfDestructTime = newTime; // Optimistically update local state
+        currentSelfDestructTime = newTime; // Update local state
     });
 }
 
@@ -249,7 +252,7 @@ chatForm.addEventListener('submit', async (e) => {
         messageId: id, 
         text: rawText, 
         isE2EE: false,
-        timerDuration: currentSelfDestructTime // 🔥 NEW: Send the currently active timer duration
+        timerDuration: currentSelfDestructTime // Send the currently active synchronized duration
     };
 
     if (isE2EEReady && sharedSecret) {
@@ -257,6 +260,7 @@ chatForm.addEventListener('submit', async (e) => {
         payload.text = encryptedData.text;
         payload.iv = encryptedData.iv;
         payload.isE2EE = true;
+        // Display the raw text locally with the timer duration
         addMessage(rawText, 'sent', myUsername, Date.now(), id, true, null, currentSelfDestructTime);
     } else {
         addMessage(rawText, 'sent', myUsername, Date.now(), id, false, null, currentSelfDestructTime);
@@ -268,11 +272,11 @@ chatForm.addEventListener('submit', async (e) => {
 
 // --- SOCKET EVENTS ---
 
-socket.on('auth-success', async ({ username, history, selfDestructTime }) => { // 🔥 NEW: Receive selfDestructTime
+socket.on('auth-success', async ({ username, history, selfDestructTime }) => {
     myUsername = username;
     await saveState(); 
 
-    // 🔥 NEW: Set the initial timer value
+    // Set the initial timer value from the server
     currentSelfDestructTime = selfDestructTime;
     if (selfDestructTimerSelect) selfDestructTimerSelect.value = selfDestructTime.toString();
     
@@ -289,10 +293,10 @@ socket.on('auth-success', async ({ username, history, selfDestructTime }) => { /
     socket.emit('exchange-key', { key: publicKeyJwk });
 });
 
-socket.on('reconnect-success', async ({ username, history, selfDestructTime }) => { // 🔥 NEW: Receive selfDestructTime
+socket.on('reconnect-success', async ({ username, history, selfDestructTime }) => {
     myUsername = username;
     
-    // 🔥 NEW: Set the initial timer value
+    // Set the initial timer value from the server
     currentSelfDestructTime = selfDestructTime;
     if (selfDestructTimerSelect) selfDestructTimerSelect.value = selfDestructTime.toString();
 
@@ -323,7 +327,7 @@ socket.on('exchange-key', async (data) => {
     }
 });
 
-// 🔥 NEW: Sync Timer Setting
+// Sync Timer Setting
 socket.on('sync-self-destruct-time', (newTime) => {
     currentSelfDestructTime = newTime;
     if (selfDestructTimerSelect) {
@@ -355,7 +359,7 @@ socket.on('partner-offline', (user) => {
 
 socket.on('receive-message', (msg) => {
     typingIndicatorEl.textContent = '';
-    // 🔥 NEW: Pass the received timer duration to addMessage
+    // Pass the received timer duration to addMessage
     addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv, msg.timerDuration);
 });
 
