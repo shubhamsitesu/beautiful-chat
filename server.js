@@ -1,214 +1,197 @@
-// server.js
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto'); 
+require('dotenv').config();
+
+// --- FIXED CONFIGURATION ---
+const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
+const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
+
+if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
+    console.error("FATAL ERROR: Secrets not loaded properly. Check .env file.");
+    process.exit(1); 
+}
+
+const ALGORITHM = 'aes-256-cbc';
+const IV_LENGTH = 16; 
+const CHAT_HISTORY_FILE = 'chat_history.json';
+const FIXED_ROOM_KEY = 'fixed_chat_room'; 
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
 
-const PORT = 3000;
-const CHAT_HISTORY_FILE = 'chat-history.json';
-const AUTH_PASSWORD = 'supersecretpassword'; // Shared Password
-const MAX_USERS = 2;
-
-// In-memory state
-let connectedUsers = {}; // { username: socket.id }
-let userKeys = {}; // { username: partnerPublicKeyJwk }
-let userSockets = {}; // { socket.id: username }
-
-// Load chat history
-let chatHistory = [];
-try {
-    const data = fs.readFileSync(CHAT_HISTORY_FILE);
-    chatHistory = JSON.parse(data);
-} catch (e) {
-    console.log("No chat history file found. Starting fresh.");
-}
-
-function saveHistory() {
-    fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(chatHistory, null, 2));
-}
-
-// Assigns user based on availability
-function assignUser() {
-    const users = Object.keys(connectedUsers);
-    if (!users.includes('UserA')) return 'UserA';
-    if (!users.includes('UserB')) return 'UserB';
-    return null; 
-}
-
-// Middleware to prevent excess connections
-io.use((socket, next) => {
-    if (Object.keys(connectedUsers).length >= MAX_USERS && !userSockets[socket.id]) {
-        return next(new Error(`Max users reached. Try again later. Refresh if needed.`));
-    }
-    next();
+const io = new Server(server, { 
+    cors: { origin: "*" },
+    transports: ['websocket', 'polling'], 
+    pingTimeout: 60000 
 });
 
+let chatHistory = [];
+let activeUsers = {}; // { 'socketId': 'UserA' or 'UserB', ... }
+
+// --- SERVER ENCRYPTION (Fallback) ---
+function encryptServerSide(text) {
+    if (!text) return '';
+    const iv = crypto.randomBytes(IV_LENGTH);
+    const cipher = crypto.createCipheriv(ALGORITHM, Buffer.from(FIXED_SECRET_KEY, 'utf8'), iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    return iv.toString('hex') + ':' + encrypted;
+}
+
+function decryptServerSide(text) {
+    if (!text) return '';
+    try {
+        const parts = text.split(':');
+        const iv = Buffer.from(parts.shift(), 'hex');
+        const encryptedText = Buffer.from(parts.join(':'), 'hex');
+        const decipher = crypto.createDecipheriv(ALGORITHM, Buffer.from(FIXED_SECRET_KEY, 'utf8'), iv);
+        let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (e) { return "Decryption Error"; }
+}
+
+// --- PERSISTENCE ---
+function loadHistory() {
+    if (!fs.existsSync(CHAT_HISTORY_FILE)) return;
+    try {
+        const encryptedHistory = JSON.parse(fs.readFileSync(CHAT_HISTORY_FILE, 'utf8'));
+        chatHistory = encryptedHistory.map(msg => {
+            if (msg.isE2EE) return msg; 
+            return { ...msg, text: decryptServerSide(msg.text) };
+        });
+    } catch (e) { chatHistory = []; }
+}
+
+function saveHistory(message) {
+    chatHistory.push(message); 
+    const storageFormat = chatHistory.map(msg => {
+        if (msg.isE2EE) return msg; 
+        return { ...msg, text: encryptServerSide(msg.text) };
+    });
+    try { fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2)); } catch (e) {}
+}
+
+function deleteMessageFromHistory(messageId) {
+    const initialLength = chatHistory.length;
+    chatHistory = chatHistory.filter(msg => msg.id !== messageId);
+    if (chatHistory.length < initialLength) {
+        const storageFormat = chatHistory.map(msg => {
+            if (msg.isE2EE) return msg;
+            return { ...msg, text: encryptServerSide(msg.text) };
+        });
+        fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2));
+    }
+}
+
+loadHistory(); 
+
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json()); 
+
+// --- SOCKET.IO ---
 io.on('connection', (socket) => {
-    console.log(`User connected: ${socket.id}`);
+    
+    socket.on('authenticate-user', ({ password }) => {
+        if (password === FIXED_LOGIN_PASSWORD) {
+            
+            const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
+            
+            if (currentRoomMembers.length >= 2 && !currentRoomMembers.includes(socket.id)) {
+                socket.emit('auth-failure', 'Room Full.');
+                return; 
+            }
+            
+            const userA_active = Object.values(activeUsers).includes('UserA');
+            const userB_active = Object.values(activeUsers).includes('UserB');
+            
+            let userType;
 
-    // --- NEW: Handle Reconnect from LocalStorage ---
-    socket.on('reconnect-user', (data) => {
-        const { username, key } = data;
+            if (!userA_active) {
+                userType = 'UserA';
+            } else if (!userB_active) {
+                userType = 'UserB';
+            } else {
+                socket.emit('auth-failure', 'System Error: Both Users Active.');
+                return;
+            }
 
-        if (connectedUsers[username] && connectedUsers[username] !== socket.id) {
-            console.log(`Reconnect failed: ${username} already connected on another socket.`);
-            return socket.emit('auth-failure', 'User already connected. Refresh to try again.');
+            activeUsers[socket.id] = userType; 
+            
+            socket.join(FIXED_ROOM_KEY);
+            socket.data.username = userType; 
+            socket.data.room = FIXED_ROOM_KEY;
+
+            socket.emit('auth-success', { username: userType, history: chatHistory });
+
+            socket.to(FIXED_ROOM_KEY).emit('partner-online', userType); 
+
+        } else {
+            socket.emit('auth-failure', 'Invalid password.');
         }
+    });
 
-        const partner = username === 'UserA' ? 'UserB' : 'UserA';
+    socket.on('exchange-key', (data) => {
+        socket.to(FIXED_ROOM_KEY).emit('exchange-key', {
+            key: data.key,
+            from: socket.data.username
+        });
+    });
+
+    socket.on('send-message', (data) => {
+        if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
+            socket.emit('auth-failure', 'Server Restarted. Please Refresh.');
+            return; 
+        }
         
-        // Authentication success flow for reconnect
-        connectedUsers[username] = socket.id;
-        userSockets[socket.id] = username;
-        userKeys[username] = key;
-
-        console.log(`User ${username} reconnected. Total users: ${Object.keys(connectedUsers).length}`);
-
-        // 1. Send success and history
-        socket.emit('reconnect-success', { username: username, history: chatHistory });
-
-        // 2. Notify partner
-        if (connectedUsers[partner]) {
-            io.to(connectedUsers[partner]).emit('partner-online', username);
-        }
+        const message = {
+            id: data.messageId,
+            user: socket.data.username, 
+            text: data.text,
+            isE2EE: data.isE2EE || false,
+            iv: data.iv || null,
+            timestamp: Date.now()
+        };
         
-        // 3. Try to establish E2EE with partner immediately
-        if (userKeys[partner]) {
-             socket.emit('exchange-key', { key: userKeys[partner], from: partner });
-        }
+        saveHistory(message); 
+        socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
+    });
+
+    socket.on('message-viewed-and-delete', (messageId) => {
+        deleteMessageFromHistory(messageId);
+        socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
     });
     
-    // --- Existing Authenticate User ---
-    socket.on('authenticate-user', (data) => {
-        if (data.password !== AUTH_PASSWORD) {
-            return socket.emit('auth-failure', 'Incorrect password.');
-        }
-
-        const username = assignUser();
-        if (!username) {
-            return socket.emit('auth-failure', 'Chat room is full. Refresh to try again.');
-        }
-
-        if (connectedUsers[username]) {
-             const oldSocketId = connectedUsers[username];
-             if(userSockets[oldSocketId]) delete userSockets[oldSocketId];
-        }
-
-        const partner = username === 'UserA' ? 'UserB' : 'UserA';
-        
-        connectedUsers[username] = socket.id;
-        userSockets[socket.id] = username;
-
-        console.log(`User ${username} authenticated. Total users: ${Object.keys(connectedUsers).length}`);
-
-        // 1. Send success and history
-        socket.emit('auth-success', { username: username, history: chatHistory });
-
-        // 2. Notify partner
-        if (connectedUsers[partner]) {
-            io.to(connectedUsers[partner]).emit('partner-online', username);
-        }
-    });
-
-    // --- E2EE Key Exchange ---
-    socket.on('exchange-key', (data) => {
-        const sender = userSockets[socket.id];
-        const partner = sender === 'UserA' ? 'UserB' : 'UserA';
-        
-        userKeys[sender] = data.key;
-        
-        // Send key to partner if they are connected
-        if (connectedUsers[partner]) {
-            io.to(connectedUsers[partner]).emit('exchange-key', { key: data.key, from: sender });
-        }
-    });
-
-    // --- Message Handling ---
+    // 🔥 NEW: Typing Indicator Logic (Relay event)
     socket.on('typing', () => {
-        const sender = userSockets[socket.id];
-        const partner = sender === 'UserA' ? 'UserB' : 'UserA';
-        if (connectedUsers[partner]) {
-            io.to(connectedUsers[partner]).emit('partner-typing', sender);
+        if (socket.data.room === FIXED_ROOM_KEY) {
+            socket.to(FIXED_ROOM_KEY).emit('partner-typing', socket.data.username);
         }
     });
 
     socket.on('stop-typing', () => {
-        const sender = userSockets[socket.id];
-        const partner = sender === 'UserA' ? 'UserB' : 'UserA';
-        if (connectedUsers[partner]) {
-            io.to(connectedUsers[partner]).emit('partner-stop-typing', sender);
+        if (socket.data.room === FIXED_ROOM_KEY) {
+            socket.to(FIXED_ROOM_KEY).emit('partner-stop-typing', socket.data.username);
         }
     });
-
-    socket.on('send-message', (payload) => {
-        const sender = userSockets[socket.id];
-        const partner = sender === 'UserA' ? 'UserB' : 'UserA';
-
-        // Message object to save to history and send
-        const msg = {
-            id: payload.messageId,
-            user: sender,
-            text: payload.text,
-            timestamp: Date.now(),
-            isE2EE: payload.isE2EE || false,
-            iv: payload.iv || null
-        };
-        
-        // Save to history (encrypted, so storage is safe)
-        chatHistory.push(msg);
-        saveHistory();
-
-        // Send to partner
-        if (connectedUsers[partner]) {
-            io.to(connectedUsers[partner]).emit('receive-message', msg);
-        } else {
-            console.log(`Message from ${sender} saved, but ${partner} is offline.`);
-        }
-    });
-
-    // --- Auto-Delete Clean-up ---
-    socket.on('message-viewed-and-delete', (messageId) => {
-        const partner = userSockets[socket.id] === 'UserA' ? 'UserB' : 'UserA';
-        
-        // Notify the partner (sender) that the message can be safely removed from their UI
-        if (connectedUsers[partner]) {
-             io.to(connectedUsers[partner]).emit('message-autodeleted-clean', messageId);
-        }
-        
-        // Remove the message from server history
-        const initialLength = chatHistory.length;
-        chatHistory = chatHistory.filter(msg => msg.id !== messageId);
-        if (chatHistory.length < initialLength) {
-             saveHistory();
-        }
-    });
-
-    // --- Disconnect ---
+    
     socket.on('disconnect', () => {
-        const disconnectedUser = userSockets[socket.id];
-        if (disconnectedUser) {
-            const partner = disconnectedUser === 'UserA' ? 'UserB' : 'UserA';
+        const disconnectedUser = socket.data.username;
+        if (disconnectedUser && socket.data.room === FIXED_ROOM_KEY) {
             
-            // Cleanup in-memory state
-            delete connectedUsers[disconnectedUser];
-            delete userSockets[socket.id];
-
-            // Notify partner
-            if (connectedUsers[partner]) {
-                io.to(connectedUsers[partner]).emit('partner-offline', disconnectedUser);
-            }
+            delete activeUsers[socket.id];
+            
+            // 🔥 NEW: Also broadcast stop-typing when user disconnects
+            socket.to(FIXED_ROOM_KEY).emit('partner-stop-typing', disconnectedUser); 
+            
+            socket.to(FIXED_ROOM_KEY).emit('partner-offline', disconnectedUser);
         }
-        console.log(`User disconnected: ${socket.id}`);
     });
 });
 
-app.use(express.static('public'));
-
-server.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-});
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
