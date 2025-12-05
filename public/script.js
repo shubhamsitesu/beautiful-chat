@@ -4,24 +4,24 @@
 const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; 
 const socket = io(RENDER_APP_URL, { transports: ['websocket', 'polling'] }); 
 
-// References to HTML elements
+// HTML 
 const loginForm = document.getElementById('login-form');
 const chatForm = document.getElementById('chat-form');
 const messagesDiv = document.getElementById('messages');
 const partnerStatusEl = document.getElementById('partner-status');
 const messageInput = document.getElementById('message-input');
-const deleteTimerSelect = document.getElementById('delete-timer'); // New: Timer control
-const typingIndicatorEl = document.getElementById('typing-indicator'); // New: Typing indicator
+const deleteTimerSelect = document.getElementById('delete-timer'); 
+const typingIndicatorEl = document.getElementById('typing-indicator'); 
 
-// Main encryption and user states
 let myUsername = null; 
 let myKeyPair = null;     
 let sharedSecret = null;  
 let isE2EEReady = false;  
 
-// Typing state management
+
 let isTyping = false;
 let timeout = undefined;
+const KEY_STORE_NAME = 'chat_e2ee_key'; // Local Storage Key
 
 // --- E2EE CRYPTO FUNCTIONS (Web Crypto API) ---
 
@@ -52,7 +52,7 @@ async function deriveSharedSecret(partnerPublicKeyJwk) {
     } catch(e) { return null; }
 }
 
-// Helper function to safely convert binary ArrayBuffer to Base64 string (Fixes btoa() error)
+// (Fixes btoa() Invalid Character Error)
 const bufferToBase64 = (buffer) => {
     let binary = '';
     const bytes = new Uint8Array(buffer);
@@ -63,7 +63,7 @@ const bufferToBase64 = (buffer) => {
     return btoa(binary);
 };
 
-// Fixed and secure encryption function
+
 async function encryptE2EE(text) {
     const enc = new TextEncoder();
     const iv = window.crypto.getRandomValues(new Uint8Array(12)); 
@@ -75,7 +75,6 @@ async function encryptE2EE(text) {
     );
 
     return { 
-        // Use the safe helper function for Base64 encoding
         text: bufferToBase64(ciphertext), 
         iv: bufferToBase64(iv.buffer) 
     };
@@ -92,7 +91,47 @@ async function decryptE2EE(b64Cipher, b64Iv) {
         );
         return new TextDecoder().decode(decrypted);
     } catch (e) {
-        return "🔒 Encrypted (Key Lost)";
+        return "🔒 Encrypted (Cannot Read)";
+    }
+}
+
+// --- PERSISTENCE (localStorage) FUNCTIONS ---
+
+async function saveState() {
+    if (myUsername && myKeyPair && myKeyPair.privateKey) {
+        const privateKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.privateKey);
+        
+        const state = {
+            username: myUsername,
+            privateKey: privateKeyJwk
+        };
+        localStorage.setItem(KEY_STORE_NAME, JSON.stringify(state));
+    }
+}
+
+async function loadState() {
+    const storedState = localStorage.getItem(KEY_STORE_NAME);
+    if (!storedState) return false;
+
+    try {
+        const state = JSON.parse(storedState);
+        
+        const privateKey = await window.crypto.subtle.importKey(
+            "jwk",
+            state.privateKey,
+            { name: "ECDH", namedCurve: "P-256" },
+            true,
+            ["deriveKey", "deriveBits"]
+        );
+        
+        myUsername = state.username;
+        myKeyPair = { privateKey: privateKey }; 
+        
+        return true;
+    } catch (e) {
+        console.error("Error loading state:", e);
+        localStorage.removeItem(KEY_STORE_NAME);
+        return false;
     }
 }
 
@@ -109,7 +148,6 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
         }
     }
 
-    // Determine message type (sent or received)
     const messageType = (user === myUsername) ? 'sent' : 'received';
 
     const div = document.createElement('div');
@@ -132,11 +170,11 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
-    // 🔥 NEW: Use selected delete time
+    // Use selected delete time
     const deleteTime = parseInt(deleteTimerSelect.value);
 
-    // Auto-delete logic only for received messages
-    if (messageType === 'received') { 
+    // Auto-delete logic only for received messages AND if timer is set
+    if (messageType === 'received' && deleteTime > 0) { 
         socket.emit('message-viewed-and-delete', messageId);
         setTimeout(() => {
             if (div.parentNode) {
@@ -144,7 +182,7 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
                 div.style.opacity = '0';
                 setTimeout(() => div.remove(), 500); 
             }
-        }, deleteTime); // Use selected time
+        }, deleteTime); 
     }
 }
 
@@ -160,16 +198,15 @@ function loadHistory(history) {
 
 function typingTimeout() {
     isTyping = false;
-    socket.emit('stop-typing'); // Notify server that typing has stopped
+    socket.emit('stop-typing'); 
 }
 
 messageInput.addEventListener('input', () => {
     if (!isTyping) {
         isTyping = true;
-        socket.emit('typing'); // Notify server that typing has started
+        socket.emit('typing'); 
     }
     clearTimeout(timeout);
-    // Send stop-typing event after 1 second of inactivity
     timeout = setTimeout(typingTimeout, 1000); 
 });
 
@@ -187,7 +224,6 @@ chatForm.addEventListener('submit', async (e) => {
     const rawText = messageInput.value;
     if (!rawText) return;
 
-    // Send stop typing event immediately after sending message
     clearTimeout(timeout);
     typingTimeout(); 
 
@@ -202,7 +238,7 @@ chatForm.addEventListener('submit', async (e) => {
         payload.isE2EE = true;
         addMessage(rawText, 'sent', myUsername, Date.now(), id, true);
     } else {
-        // Server-side Encryption (Fallback)
+        // Fallback
         addMessage(rawText, 'sent', myUsername, Date.now(), id, false);
     }
     
@@ -213,6 +249,26 @@ chatForm.addEventListener('submit', async (e) => {
 // --- SOCKET EVENTS ---
 
 socket.on('auth-success', async ({ username, history }) => {
+    myUsername = username;
+    
+    // Save state on successful login
+    await saveState(); 
+
+    document.getElementById('login-container').classList.add('hidden');
+    document.getElementById('chat-container').classList.remove('hidden');
+    
+    const partner = username === 'UserA' ? 'UserB' : 'UserA';
+    document.getElementById('chat-header').textContent = `Chat: ${partner} (${username})`;
+    
+    loadHistory(history);
+    partnerStatusEl.textContent = 'Connecting...';
+    
+    const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
+    socket.emit('exchange-key', { key: publicKeyJwk });
+});
+
+// Handle Auto-Reconnect Success
+socket.on('reconnect-success', async ({ username, history }) => {
     myUsername = username;
     document.getElementById('login-container').classList.add('hidden');
     document.getElementById('chat-container').classList.remove('hidden');
@@ -234,7 +290,6 @@ socket.on('exchange-key', async (data) => {
         partnerStatusEl.textContent = "🔒 Secure E2EE Connected";
         partnerStatusEl.style.color = "#2e7d32"; 
         
-        // If partner sent key first and we weren't ready, send our key back
         if (data.from !== myUsername && !isE2EEReady) {
              const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
              socket.emit('exchange-key', { key: publicKeyJwk });
@@ -246,30 +301,26 @@ socket.on('partner-online', async (user) => {
     // Re-trigger handshake
     const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
     socket.emit('exchange-key', { key: publicKeyJwk });
+    // P2P Icon Logic Removed
 });
 
 socket.on('partner-offline', (user) => {
-    const partnerName = user === myUsername ? 'You' : (myUsername === 'UserA' ? 'UserB' : 'UserA');
-
+    const partnerName = user === 'UserA' ? 'UserB' : 'UserA';
+    
     partnerStatusEl.textContent = `⚫ ${partnerName} Offline`;
     partnerStatusEl.style.color = '#aaa';
     
-    // Reset E2EE state
     isE2EEReady = false;
     sharedSecret = null; 
-    
-    // Clear typing indicator if partner goes offline
     typingIndicatorEl.textContent = '';
+    // P2P Icon Logic Removed
 });
 
 socket.on('receive-message', (msg) => {
-    // Hide typing indicator when message received
     typingIndicatorEl.textContent = '';
-    
     addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv);
 });
 
-// NEW: Handle Typing Events
 socket.on('partner-typing', (user) => {
     if (user !== myUsername) {
         const partnerName = myUsername === 'UserA' ? 'UserB' : 'UserA';
@@ -286,9 +337,9 @@ socket.on('partner-stop-typing', (user) => {
 socket.on('auth-failure', (msg) => {
     if (msg.includes('Refresh')) location.reload();
     else document.getElementById('error-msg').textContent = msg;
+    localStorage.removeItem(KEY_STORE_NAME); 
 });
 
-// Server confirmation for auto-delete
 socket.on('message-autodeleted-clean', (id) => {
     const el = document.querySelector(`.message[data-id="${id}"]`);
     if (el && el.classList.contains('sent')) {
@@ -296,3 +347,37 @@ socket.on('message-autodeleted-clean', (id) => {
         setTimeout(() => el.remove(), 500); 
     }
 });
+
+// --- INITIALIZATION ---
+
+async function attemptAutoLogin() {
+    const stateLoaded = await loadState();
+    
+    if (stateLoaded) {
+        // Use the stored private key for decryption
+        
+        // Generate a new keypair (to get a fresh public key for exchange)
+        const newKeyPair = await generateKeyPair();
+        // Overwrite the new private key with the stored private key
+        myKeyPair = { ...newKeyPair, privateKey: myKeyPair.privateKey };
+
+        const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
+        
+        // Send auto-reconnect request to the server
+        socket.emit('reconnect-user', { 
+            username: myUsername,
+            key: publicKeyJwk
+        });
+        
+        // Display chat container while waiting for server response
+        document.getElementById('login-container').classList.add('hidden');
+        document.getElementById('chat-container').classList.remove('hidden');
+        
+    } else {
+        // If no state, show login screen
+        document.getElementById('login-container').classList.remove('hidden');
+    }
+}
+
+// Run auto-login attempt on script load
+attemptAutoLogin();
