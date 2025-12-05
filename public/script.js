@@ -1,7 +1,7 @@
 // public/script.js
 
 // UPDATE YOUR SERVER URL HERE
-const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; // अपने URL से बदलें
+const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; // Change to your Render URL
 const socket = io(RENDER_APP_URL, { transports: ['websocket', 'polling'] }); 
 
 // References to HTML elements
@@ -10,8 +10,11 @@ const chatForm = document.getElementById('chat-form');
 const messagesDiv = document.getElementById('messages');
 const partnerStatusEl = document.getElementById('partner-status');
 const messageInput = document.getElementById('message-input');
-const deleteTimerSelect = document.getElementById('delete-timer'); 
-const typingIndicatorEl = document.getElementById('typing-indicator'); 
+const typingIndicatorEl = document.getElementById('typing-indicator');
+
+// 🔥 NEW: Global Timer Controls
+const selfDestructTimerSelect = document.getElementById('self-destruct-timer'); // The new control (must exist in HTML)
+let currentSelfDestructTime = 0; // The shared, active timer value
 
 // Main encryption and user states
 let myUsername = null; 
@@ -23,7 +26,7 @@ let isE2EEReady = false;
 let isTyping = false;
 let timeout = undefined;
 
-// 🔥 बदला गया: SESSION STORAGE KEY
+// SESSION STORAGE KEY
 const KEY_STORE_NAME = 'chat_e2ee_key_session'; 
 
 // --- E2EE CRYPTO FUNCTIONS (Web Crypto API) ---
@@ -55,7 +58,6 @@ async function deriveSharedSecret(partnerPublicKeyJwk) {
     } catch(e) { return null; }
 }
 
-// Helper function to safely convert binary ArrayBuffer to Base64 string (Fixes btoa() error)
 const bufferToBase64 = (buffer) => {
     let binary = '';
     const bytes = new Uint8Array(buffer);
@@ -66,7 +68,6 @@ const bufferToBase64 = (buffer) => {
     return btoa(binary);
 };
 
-// Fixed and secure encryption function
 async function encryptE2EE(text) {
     const enc = new TextEncoder();
     const iv = window.crypto.getRandomValues(new Uint8Array(12)); 
@@ -78,7 +79,6 @@ async function encryptE2EE(text) {
     );
 
     return { 
-        // Use the safe helper function for Base64 encoding
         text: bufferToBase64(ciphertext), 
         iv: bufferToBase64(iv.buffer) 
     };
@@ -99,7 +99,7 @@ async function decryptE2EE(b64Cipher, b64Iv) {
     }
 }
 
-// --- PERSISTENCE (sessionStorage) FUNCTIONS - ONLY CHANGE HERE ---
+// --- PERSISTENCE (sessionStorage) FUNCTIONS ---
 
 async function saveState() {
     if (myUsername && myKeyPair && myKeyPair.privateKey) {
@@ -109,13 +109,11 @@ async function saveState() {
             username: myUsername,
             privateKey: privateKeyJwk
         };
-        // 🔥 बदला गया: sessionStorage का उपयोग करें
         sessionStorage.setItem(KEY_STORE_NAME, JSON.stringify(state));
     }
 }
 
 async function loadState() {
-    // 🔥 बदला गया: sessionStorage से लोड करें
     const storedState = sessionStorage.getItem(KEY_STORE_NAME);
     if (!storedState) return false;
 
@@ -136,7 +134,6 @@ async function loadState() {
         return true;
     } catch (e) {
         console.error("Error loading state:", e);
-        // 🔥 बदला गया: असफल होने पर sessionStorage आइटम हटाएँ
         sessionStorage.removeItem(KEY_STORE_NAME);
         return false;
     }
@@ -144,7 +141,7 @@ async function loadState() {
 
 // --- UI HELPER FUNCTIONS ---
 
-async function addMessage(text, type, user, timestamp, messageId, isE2EE = false, iv = null) {
+async function addMessage(text, type, user, timestamp, messageId, isE2EE = false, iv = null, timerDuration = 0) {
     let displayText = text;
 
     if (isE2EE && type === 'received') {
@@ -155,7 +152,6 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
         }
     }
 
-    // Determine message type (sent or received)
     const messageType = (user === myUsername) ? 'sent' : 'received';
 
     const div = document.createElement('div');
@@ -169,28 +165,30 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     const headerText = user === myUsername ? 'You' : partnerName; 
     
     const lockIcon = isE2EE ? '🔒 ' : '';
+    // 🔥 NEW: Display timer duration if set
+    const timerIcon = timerDuration > 0 ? ` ⏱️ ${timerDuration / 1000}s` : '';
 
     div.innerHTML = `
         <div class="message-header">${headerText}</div>
-        <div class="message-text" style="${isE2EE ? 'color:#2e7d32; font-weight:500;' : ''}">${lockIcon}${displayText}</div>
+        <div class="message-text" style="${isE2EE ? 'color:#2e7d32; font-weight:500;' : ''}">${lockIcon}${displayText}${timerIcon}</div>
         <span class="message-time">${timeString}</span>
     `;
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
-    // Use selected delete time
-    const deleteTime = parseInt(deleteTimerSelect.value);
-
-    // Auto-delete logic only for received messages AND if timer is set
-    if (messageType === 'received' && deleteTime > 0) { 
-        socket.emit('message-viewed-and-delete', messageId);
+    // 🔥 NEW: Use global timer for deletion
+    if (timerDuration > 0) { 
+        // Trigger deletion on the client after the timer expires
         setTimeout(() => {
             if (div.parentNode) {
                 div.style.transition = 'opacity 0.5s';
                 div.style.opacity = '0';
                 setTimeout(() => div.remove(), 500); 
             }
-        }, deleteTime); 
+        }, timerDuration); 
+
+        // Inform the server about the deletion (for history cleanup)
+        socket.emit('message-viewed-and-delete', messageId);
     }
 }
 
@@ -198,7 +196,7 @@ function loadHistory(history) {
     messagesDiv.innerHTML = '';
     history.forEach(msg => {
         const type = msg.user === myUsername ? 'sent' : 'received';
-        addMessage(msg.text, type, msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv); 
+        addMessage(msg.text, type, msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv, msg.timerDuration); 
     });
 }
 
@@ -220,6 +218,17 @@ messageInput.addEventListener('input', () => {
 
 // --- EVENT LISTENERS ---
 
+// 🔥 NEW: Timer Select Change Listener
+if (selfDestructTimerSelect) {
+    selfDestructTimerSelect.addEventListener('change', (e) => {
+        const newTime = parseInt(e.target.value);
+        // Send the new time to the server to sync with the partner
+        socket.emit('set-self-destruct-time', newTime);
+        currentSelfDestructTime = newTime; // Optimistically update local state
+    });
+}
+
+
 loginForm.addEventListener('submit', async (e) => {
     e.preventDefault(); 
     const pass = document.getElementById('password').value;
@@ -236,18 +245,21 @@ chatForm.addEventListener('submit', async (e) => {
     typingTimeout(); 
 
     const id = crypto.randomUUID();
-    let payload = { messageId: id, text: rawText, isE2EE: false };
+    let payload = { 
+        messageId: id, 
+        text: rawText, 
+        isE2EE: false,
+        timerDuration: currentSelfDestructTime // 🔥 NEW: Send the currently active timer duration
+    };
 
     if (isE2EEReady && sharedSecret) {
-        // E2EE Encryption
         const encryptedData = await encryptE2EE(rawText);
         payload.text = encryptedData.text;
         payload.iv = encryptedData.iv;
         payload.isE2EE = true;
-        addMessage(rawText, 'sent', myUsername, Date.now(), id, true);
+        addMessage(rawText, 'sent', myUsername, Date.now(), id, true, null, currentSelfDestructTime);
     } else {
-        // Fallback
-        addMessage(rawText, 'sent', myUsername, Date.now(), id, false);
+        addMessage(rawText, 'sent', myUsername, Date.now(), id, false, null, currentSelfDestructTime);
     }
     
     socket.emit('send-message', payload);
@@ -256,12 +268,14 @@ chatForm.addEventListener('submit', async (e) => {
 
 // --- SOCKET EVENTS ---
 
-socket.on('auth-success', async ({ username, history }) => {
+socket.on('auth-success', async ({ username, history, selfDestructTime }) => { // 🔥 NEW: Receive selfDestructTime
     myUsername = username;
-    
-    // 🔥 बदला गया: Save state on successful login
     await saveState(); 
 
+    // 🔥 NEW: Set the initial timer value
+    currentSelfDestructTime = selfDestructTime;
+    if (selfDestructTimerSelect) selfDestructTimerSelect.value = selfDestructTime.toString();
+    
     document.getElementById('login-container').classList.add('hidden');
     document.getElementById('chat-container').classList.remove('hidden');
     
@@ -275,9 +289,13 @@ socket.on('auth-success', async ({ username, history }) => {
     socket.emit('exchange-key', { key: publicKeyJwk });
 });
 
-// Handle Auto-Reconnect Success
-socket.on('reconnect-success', async ({ username, history }) => {
+socket.on('reconnect-success', async ({ username, history, selfDestructTime }) => { // 🔥 NEW: Receive selfDestructTime
     myUsername = username;
+    
+    // 🔥 NEW: Set the initial timer value
+    currentSelfDestructTime = selfDestructTime;
+    if (selfDestructTimerSelect) selfDestructTimerSelect.value = selfDestructTime.toString();
+
     document.getElementById('login-container').classList.add('hidden');
     document.getElementById('chat-container').classList.remove('hidden');
     
@@ -305,6 +323,19 @@ socket.on('exchange-key', async (data) => {
     }
 });
 
+// 🔥 NEW: Sync Timer Setting
+socket.on('sync-self-destruct-time', (newTime) => {
+    currentSelfDestructTime = newTime;
+    if (selfDestructTimerSelect) {
+        selfDestructTimerSelect.value = newTime.toString();
+    }
+    partnerStatusEl.textContent = `⏱️ Delete Timer Set to ${newTime / 1000}s`;
+    setTimeout(() => {
+        if (isE2EEReady) partnerStatusEl.textContent = "🔒 Secure E2EE Connected";
+    }, 3000);
+});
+
+
 socket.on('partner-online', async (user) => {
     // Re-trigger handshake
     const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
@@ -324,7 +355,8 @@ socket.on('partner-offline', (user) => {
 
 socket.on('receive-message', (msg) => {
     typingIndicatorEl.textContent = '';
-    addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv);
+    // 🔥 NEW: Pass the received timer duration to addMessage
+    addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv, msg.timerDuration);
 });
 
 socket.on('partner-typing', (user) => {
@@ -343,7 +375,6 @@ socket.on('partner-stop-typing', (user) => {
 socket.on('auth-failure', (msg) => {
     if (msg.includes('Refresh')) location.reload();
     else document.getElementById('error-msg').textContent = msg;
-    // 🔥 बदला गया: Auth fail होने पर sessionStorage से हटाएँ
     sessionStorage.removeItem(KEY_STORE_NAME); 
 });
 
@@ -358,34 +389,26 @@ socket.on('message-autodeleted-clean', (id) => {
 // --- INITIALIZATION ---
 
 async function attemptAutoLogin() {
-    // 🔥 बदला गया: sessionStorage से लोड करें
     const stateLoaded = await loadState();
     
     if (stateLoaded) {
         
-        // 1. Generate a NEW keypair to get a fresh PUBLIC key for the handshake.
         const freshKeyPair = await generateKeyPair();
-        
-        // 2. OVERWRITE the temporary PRIVATE key with the stored, original PRIVATE key.
         myKeyPair = { publicKey: freshKeyPair.publicKey, privateKey: myKeyPair.privateKey };
 
         const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
         
-        // Send auto-reconnect request to the server
         socket.emit('reconnect-user', { 
             username: myUsername,
             key: publicKeyJwk
         });
         
-        // Display chat container while waiting for server response
         document.getElementById('login-container').classList.add('hidden');
         document.getElementById('chat-container').classList.remove('hidden');
         
     } else {
-        // If no state, show login screen
         document.getElementById('login-container').classList.remove('hidden');
     }
 }
 
-// Run auto-login attempt on script load
 attemptAutoLogin();
