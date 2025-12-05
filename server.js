@@ -12,7 +12,7 @@ require('dotenv').config();
 // Ensure CHAT_LOGIN_PASSWORD and CHAT_SECRET_KEY are set in your .env file
 const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD || 'supersecretpassword'; 
 const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY || 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // Must be 32 characters
-const MAX_USERS = 2; // Maximum 2 users
+const MAX_USERS = 2; 
 
 if (FIXED_SECRET_KEY.length !== 32) {
     console.error("FATAL ERROR: FIXED_SECRET_KEY must be 32 characters long. Check .env file.");
@@ -36,7 +36,7 @@ const io = new Server(server, {
 let chatHistory = [];
 let activeUsers = {}; 
 let userKeys = {}; 
-let selfDestructTime = 10000; // Default: 10 seconds
+let selfDestructTime = 10000; // Set default to 10 seconds (10000ms)
 
 // --- SERVER ENCRYPTION (Fallback & History Storage) ---
 
@@ -150,31 +150,8 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 2. Reconnect (from sessionStorage)
-    socket.on('reconnect-user', (data) => {
-        const { username, key } = data;
-
-        activeUsers[socket.id] = username;
-        userKeys[username] = key;
-
-        socket.join(FIXED_ROOM_KEY);
-        socket.data.username = username;
-        socket.data.room = FIXED_ROOM_KEY;
-
-        // Send current selfDestructTime on reconnect success
-        socket.emit('reconnect-success', { 
-            username: username, 
-            history: chatHistory,
-            selfDestructTime: selfDestructTime
-        });
-
-        socket.to(FIXED_ROOM_KEY).emit('partner-online', username);
-        
-        const partner = username === 'UserA' ? 'UserB' : 'UserA';
-        if (userKeys[partner]) {
-             socket.emit('exchange-key', { key: userKeys[partner], from: partner });
-        }
-    });
+    // 2. Reconnect (REMOVED LOGIC - All logins go through 'authenticate-user' now)
+    // We are removing the 'reconnect-user' handler entirely as all successful logins now use 'auth-success'.
     
     // 3. Handle self-destruct time change and broadcast
     socket.on('set-self-destruct-time', (newTime) => {
@@ -192,12 +169,22 @@ io.on('connection', (socket) => {
         const sender = socket.data.username;
         if (!sender) return;
 
-        userKeys[sender] = data.key;
+        userKeys[sender] = data.key; 
         
+        // Send key to partner
         socket.to(FIXED_ROOM_KEY).emit('exchange-key', {
             key: data.key,
             from: sender
         });
+        
+        // FIX for Key Lost: Immediately check for partner's key and send it back
+        const partner = sender === 'UserA' ? 'UserB' : 'UserA';
+        if (userKeys[partner]) {
+             socket.emit('exchange-key', { 
+                 key: userKeys[partner], 
+                 from: partner
+             });
+        }
     });
 
     // 5. Send Message
@@ -237,9 +224,7 @@ io.on('connection', (socket) => {
 
     // 7. Auto-Delete (History Cleanup)
     socket.on('message-viewed-and-delete', (messageId) => {
-        // The client handles the visible timer and deletion; the server cleans up the saved history
         deleteMessageFromHistory(messageId);
-        // Optional: Notify the sender that the history was cleaned up
         socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
     });
     
