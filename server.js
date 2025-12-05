@@ -1,3 +1,5 @@
+// server.js
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -7,11 +9,13 @@ const crypto = require('crypto');
 require('dotenv').config();
 
 // --- FIXED CONFIGURATION ---
-const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
-const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
+// Ensure CHAT_LOGIN_PASSWORD and CHAT_SECRET_KEY are set in your .env file
+const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD || 'supersecretpassword'; 
+const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY || 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // Must be 32 characters
+const MAX_USERS = 2; // Maximum 2 users
 
-if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
-    console.error("FATAL ERROR: Secrets not loaded properly. Check .env file.");
+if (FIXED_SECRET_KEY.length !== 32) {
+    console.error("FATAL ERROR: FIXED_SECRET_KEY must be 32 characters long. Check .env file.");
     process.exit(1); 
 }
 
@@ -30,9 +34,12 @@ const io = new Server(server, {
 });
 
 let chatHistory = [];
-let activeUsers = {}; // { 'socketId': 'UserA' or 'UserB', ... }
+let activeUsers = {}; 
+let userKeys = {}; 
+let selfDestructTime = 3000; // Default: 3 seconds
 
-// --- SERVER ENCRYPTION (Fallback) ---
+// --- SERVER ENCRYPTION (Fallback & History Storage) ---
+
 function encryptServerSide(text) {
     if (!text) return '';
     const iv = crypto.randomBytes(IV_LENGTH);
@@ -56,6 +63,7 @@ function decryptServerSide(text) {
 }
 
 // --- PERSISTENCE ---
+
 function loadHistory() {
     if (!fs.existsSync(CHAT_HISTORY_FILE)) return;
     try {
@@ -64,7 +72,8 @@ function loadHistory() {
             if (msg.isE2EE) return msg; 
             return { ...msg, text: decryptServerSide(msg.text) };
         });
-    } catch (e) { chatHistory = []; }
+        console.log("Chat history loaded.");
+    } catch (e) { chatHistory = []; console.log("No chat history file found or error loading.");}
 }
 
 function saveHistory(message) {
@@ -73,7 +82,7 @@ function saveHistory(message) {
         if (msg.isE2EE) return msg; 
         return { ...msg, text: encryptServerSide(msg.text) };
     });
-    try { fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2)); } catch (e) {}
+    try { fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2)); } catch (e) { console.error("Error saving history:", e); }
 }
 
 function deleteMessageFromHistory(messageId) {
@@ -84,7 +93,7 @@ function deleteMessageFromHistory(messageId) {
             if (msg.isE2EE) return msg;
             return { ...msg, text: encryptServerSide(msg.text) };
         });
-        fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2));
+        try { fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2)); } catch (e) { console.error("Error saving history after delete:", e); }
     }
 }
 
@@ -96,13 +105,14 @@ app.use(express.json());
 // --- SOCKET.IO ---
 io.on('connection', (socket) => {
     
+    // 1. New Login
     socket.on('authenticate-user', ({ password }) => {
         if (password === FIXED_LOGIN_PASSWORD) {
             
             const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
-            if (currentRoomMembers.length >= 2 && !currentRoomMembers.includes(socket.id)) {
-                socket.emit('auth-failure', 'Room Full.');
+            if (currentRoomMembers.length >= MAX_USERS) {
+                socket.emit('auth-failure', 'Room Full. Max 2 users allowed.');
                 return; 
             }
             
@@ -126,7 +136,12 @@ io.on('connection', (socket) => {
             socket.data.username = userType; 
             socket.data.room = FIXED_ROOM_KEY;
 
-            socket.emit('auth-success', { username: userType, history: chatHistory });
+            // Send current selfDestructTime on auth success
+            socket.emit('auth-success', { 
+                username: userType, 
+                history: chatHistory,
+                selfDestructTime: selfDestructTime
+            });
 
             socket.to(FIXED_ROOM_KEY).emit('partner-online', userType); 
 
@@ -135,13 +150,57 @@ io.on('connection', (socket) => {
         }
     });
 
+    // 2. Reconnect (from sessionStorage)
+    socket.on('reconnect-user', (data) => {
+        const { username, key } = data;
+
+        activeUsers[socket.id] = username;
+        userKeys[username] = key;
+
+        socket.join(FIXED_ROOM_KEY);
+        socket.data.username = username;
+        socket.data.room = FIXED_ROOM_KEY;
+
+        // Send current selfDestructTime on reconnect success
+        socket.emit('reconnect-success', { 
+            username: username, 
+            history: chatHistory,
+            selfDestructTime: selfDestructTime
+        });
+
+        socket.to(FIXED_ROOM_KEY).emit('partner-online', username);
+        
+        const partner = username === 'UserA' ? 'UserB' : 'UserA';
+        if (userKeys[partner]) {
+             socket.emit('exchange-key', { key: userKeys[partner], from: partner });
+        }
+    });
+    
+    // 3. Handle self-destruct time change and broadcast
+    socket.on('set-self-destruct-time', (newTime) => {
+        const newTimeInt = parseInt(newTime);
+        if (isNaN(newTimeInt)) return;
+
+        selfDestructTime = newTimeInt;
+        
+        // Broadcast the new time to all clients in the room
+        io.to(FIXED_ROOM_KEY).emit('sync-self-destruct-time', selfDestructTime);
+    });
+
+    // 4. Key Exchange
     socket.on('exchange-key', (data) => {
+        const sender = socket.data.username;
+        if (!sender) return;
+
+        userKeys[sender] = data.key;
+        
         socket.to(FIXED_ROOM_KEY).emit('exchange-key', {
             key: data.key,
-            from: socket.data.username
+            from: sender
         });
     });
 
+    // 5. Send Message
     socket.on('send-message', (data) => {
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
             socket.emit('auth-failure', 'Server Restarted. Please Refresh.');
@@ -154,19 +213,16 @@ io.on('connection', (socket) => {
             text: data.text,
             isE2EE: data.isE2EE || false,
             iv: data.iv || null,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            // Attach the current synchronized timer duration
+            timerDuration: selfDestructTime 
         };
         
         saveHistory(message); 
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
-    socket.on('message-viewed-and-delete', (messageId) => {
-        deleteMessageFromHistory(messageId);
-        socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
-    });
-    
-    // 🔥 NEW: Typing Indicator Logic (Relay event)
+    // 6. Typing
     socket.on('typing', () => {
         if (socket.data.room === FIXED_ROOM_KEY) {
             socket.to(FIXED_ROOM_KEY).emit('partner-typing', socket.data.username);
@@ -178,16 +234,23 @@ io.on('connection', (socket) => {
             socket.to(FIXED_ROOM_KEY).emit('partner-stop-typing', socket.data.username);
         }
     });
+
+    // 7. Auto-Delete (History Cleanup)
+    socket.on('message-viewed-and-delete', (messageId) => {
+        // The client handles the visible timer and deletion; the server cleans up the saved history
+        deleteMessageFromHistory(messageId);
+        // Optional: Notify the sender that the history was cleaned up
+        socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
+    });
     
+    // 8. Disconnect
     socket.on('disconnect', () => {
         const disconnectedUser = socket.data.username;
         if (disconnectedUser && socket.data.room === FIXED_ROOM_KEY) {
             
             delete activeUsers[socket.id];
             
-            // 🔥 NEW: Also broadcast stop-typing when user disconnects
             socket.to(FIXED_ROOM_KEY).emit('partner-stop-typing', disconnectedUser); 
-            
             socket.to(FIXED_ROOM_KEY).emit('partner-offline', disconnectedUser);
         }
     });
