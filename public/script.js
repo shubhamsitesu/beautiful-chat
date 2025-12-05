@@ -1,7 +1,7 @@
 // public/script.js
 
 // UPDATE YOUR SERVER URL HERE
-const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; 
+const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; // अपने URL से बदलें
 const socket = io(RENDER_APP_URL, { transports: ['websocket', 'polling'] }); 
 
 // References to HTML elements
@@ -10,8 +10,8 @@ const chatForm = document.getElementById('chat-form');
 const messagesDiv = document.getElementById('messages');
 const partnerStatusEl = document.getElementById('partner-status');
 const messageInput = document.getElementById('message-input');
-const deleteTimerSelect = document.getElementById('delete-timer'); // New: Timer control
-const typingIndicatorEl = document.getElementById('typing-indicator'); // New: Typing indicator
+const deleteTimerSelect = document.getElementById('delete-timer'); 
+const typingIndicatorEl = document.getElementById('typing-indicator'); 
 
 // Main encryption and user states
 let myUsername = null; 
@@ -22,6 +22,9 @@ let isE2EEReady = false;
 // Typing state management
 let isTyping = false;
 let timeout = undefined;
+
+// 🔥 बदला गया: SESSION STORAGE KEY
+const KEY_STORE_NAME = 'chat_e2ee_key_session'; 
 
 // --- E2EE CRYPTO FUNCTIONS (Web Crypto API) ---
 
@@ -96,6 +99,49 @@ async function decryptE2EE(b64Cipher, b64Iv) {
     }
 }
 
+// --- PERSISTENCE (sessionStorage) FUNCTIONS - ONLY CHANGE HERE ---
+
+async function saveState() {
+    if (myUsername && myKeyPair && myKeyPair.privateKey) {
+        const privateKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.privateKey);
+        
+        const state = {
+            username: myUsername,
+            privateKey: privateKeyJwk
+        };
+        // 🔥 बदला गया: sessionStorage का उपयोग करें
+        sessionStorage.setItem(KEY_STORE_NAME, JSON.stringify(state));
+    }
+}
+
+async function loadState() {
+    // 🔥 बदला गया: sessionStorage से लोड करें
+    const storedState = sessionStorage.getItem(KEY_STORE_NAME);
+    if (!storedState) return false;
+
+    try {
+        const state = JSON.parse(storedState);
+        
+        const privateKey = await window.crypto.subtle.importKey(
+            "jwk",
+            state.privateKey,
+            { name: "ECDH", namedCurve: "P-256" },
+            true,
+            ["deriveKey", "deriveBits"]
+        );
+        
+        myUsername = state.username;
+        myKeyPair = { privateKey: privateKey }; 
+        
+        return true;
+    } catch (e) {
+        console.error("Error loading state:", e);
+        // 🔥 बदला गया: असफल होने पर sessionStorage आइटम हटाएँ
+        sessionStorage.removeItem(KEY_STORE_NAME);
+        return false;
+    }
+}
+
 // --- UI HELPER FUNCTIONS ---
 
 async function addMessage(text, type, user, timestamp, messageId, isE2EE = false, iv = null) {
@@ -132,11 +178,11 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
     messagesDiv.appendChild(div);
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
     
-    // 🔥 NEW: Use selected delete time
+    // Use selected delete time
     const deleteTime = parseInt(deleteTimerSelect.value);
 
-    // Auto-delete logic only for received messages
-    if (messageType === 'received') { 
+    // Auto-delete logic only for received messages AND if timer is set
+    if (messageType === 'received' && deleteTime > 0) { 
         socket.emit('message-viewed-and-delete', messageId);
         setTimeout(() => {
             if (div.parentNode) {
@@ -144,7 +190,7 @@ async function addMessage(text, type, user, timestamp, messageId, isE2EE = false
                 div.style.opacity = '0';
                 setTimeout(() => div.remove(), 500); 
             }
-        }, deleteTime); // Use selected time
+        }, deleteTime); 
     }
 }
 
@@ -160,16 +206,15 @@ function loadHistory(history) {
 
 function typingTimeout() {
     isTyping = false;
-    socket.emit('stop-typing'); // Notify server that typing has stopped
+    socket.emit('stop-typing'); 
 }
 
 messageInput.addEventListener('input', () => {
     if (!isTyping) {
         isTyping = true;
-        socket.emit('typing'); // Notify server that typing has started
+        socket.emit('typing'); 
     }
     clearTimeout(timeout);
-    // Send stop-typing event after 1 second of inactivity
     timeout = setTimeout(typingTimeout, 1000); 
 });
 
@@ -187,7 +232,6 @@ chatForm.addEventListener('submit', async (e) => {
     const rawText = messageInput.value;
     if (!rawText) return;
 
-    // Send stop typing event immediately after sending message
     clearTimeout(timeout);
     typingTimeout(); 
 
@@ -202,7 +246,7 @@ chatForm.addEventListener('submit', async (e) => {
         payload.isE2EE = true;
         addMessage(rawText, 'sent', myUsername, Date.now(), id, true);
     } else {
-        // Server-side Encryption (Fallback)
+        // Fallback
         addMessage(rawText, 'sent', myUsername, Date.now(), id, false);
     }
     
@@ -213,6 +257,26 @@ chatForm.addEventListener('submit', async (e) => {
 // --- SOCKET EVENTS ---
 
 socket.on('auth-success', async ({ username, history }) => {
+    myUsername = username;
+    
+    // 🔥 बदला गया: Save state on successful login
+    await saveState(); 
+
+    document.getElementById('login-container').classList.add('hidden');
+    document.getElementById('chat-container').classList.remove('hidden');
+    
+    const partner = username === 'UserA' ? 'UserB' : 'UserA';
+    document.getElementById('chat-header').textContent = `Chat: ${partner} (${username})`;
+    
+    loadHistory(history);
+    partnerStatusEl.textContent = 'Connecting...';
+    
+    const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
+    socket.emit('exchange-key', { key: publicKeyJwk });
+});
+
+// Handle Auto-Reconnect Success
+socket.on('reconnect-success', async ({ username, history }) => {
     myUsername = username;
     document.getElementById('login-container').classList.add('hidden');
     document.getElementById('chat-container').classList.remove('hidden');
@@ -234,7 +298,6 @@ socket.on('exchange-key', async (data) => {
         partnerStatusEl.textContent = "🔒 Secure E2EE Connected";
         partnerStatusEl.style.color = "#2e7d32"; 
         
-        // If partner sent key first and we weren't ready, send our key back
         if (data.from !== myUsername && !isE2EEReady) {
              const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
              socket.emit('exchange-key', { key: publicKeyJwk });
@@ -249,27 +312,21 @@ socket.on('partner-online', async (user) => {
 });
 
 socket.on('partner-offline', (user) => {
-    const partnerName = user === myUsername ? 'You' : (myUsername === 'UserA' ? 'UserB' : 'UserA');
-
+    const partnerName = user === 'UserA' ? 'UserB' : 'UserA';
+    
     partnerStatusEl.textContent = `⚫ ${partnerName} Offline`;
     partnerStatusEl.style.color = '#aaa';
     
-    // Reset E2EE state
     isE2EEReady = false;
     sharedSecret = null; 
-    
-    // Clear typing indicator if partner goes offline
     typingIndicatorEl.textContent = '';
 });
 
 socket.on('receive-message', (msg) => {
-    // Hide typing indicator when message received
     typingIndicatorEl.textContent = '';
-    
     addMessage(msg.text, 'received', msg.user, msg.timestamp, msg.id, msg.isE2EE, msg.iv);
 });
 
-// NEW: Handle Typing Events
 socket.on('partner-typing', (user) => {
     if (user !== myUsername) {
         const partnerName = myUsername === 'UserA' ? 'UserB' : 'UserA';
@@ -286,9 +343,10 @@ socket.on('partner-stop-typing', (user) => {
 socket.on('auth-failure', (msg) => {
     if (msg.includes('Refresh')) location.reload();
     else document.getElementById('error-msg').textContent = msg;
+    // 🔥 बदला गया: Auth fail होने पर sessionStorage से हटाएँ
+    sessionStorage.removeItem(KEY_STORE_NAME); 
 });
 
-// Server confirmation for auto-delete
 socket.on('message-autodeleted-clean', (id) => {
     const el = document.querySelector(`.message[data-id="${id}"]`);
     if (el && el.classList.contains('sent')) {
@@ -296,3 +354,38 @@ socket.on('message-autodeleted-clean', (id) => {
         setTimeout(() => el.remove(), 500); 
     }
 });
+
+// --- INITIALIZATION ---
+
+async function attemptAutoLogin() {
+    // 🔥 बदला गया: sessionStorage से लोड करें
+    const stateLoaded = await loadState();
+    
+    if (stateLoaded) {
+        
+        // 1. Generate a NEW keypair to get a fresh PUBLIC key for the handshake.
+        const freshKeyPair = await generateKeyPair();
+        
+        // 2. OVERWRITE the temporary PRIVATE key with the stored, original PRIVATE key.
+        myKeyPair = { publicKey: freshKeyPair.publicKey, privateKey: myKeyPair.privateKey };
+
+        const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.publicKey);
+        
+        // Send auto-reconnect request to the server
+        socket.emit('reconnect-user', { 
+            username: myUsername,
+            key: publicKeyJwk
+        });
+        
+        // Display chat container while waiting for server response
+        document.getElementById('login-container').classList.add('hidden');
+        document.getElementById('chat-container').classList.remove('hidden');
+        
+    } else {
+        // If no state, show login screen
+        document.getElementById('login-container').classList.remove('hidden');
+    }
+}
+
+// Run auto-login attempt on script load
+attemptAutoLogin();
