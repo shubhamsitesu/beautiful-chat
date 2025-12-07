@@ -1,5 +1,3 @@
-// server.js
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -9,13 +7,11 @@ const crypto = require('crypto');
 require('dotenv').config();
 
 // --- FIXED CONFIGURATION ---
-// Ensure CHAT_LOGIN_PASSWORD and CHAT_SECRET_KEY are set in your .env file
-const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD || 'supersecretpassword'; 
-const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY || 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // Must be 32 characters
-const MAX_USERS = 2; 
+const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
+const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
 
-if (FIXED_SECRET_KEY.length !== 32) {
-    console.error("FATAL ERROR: FIXED_SECRET_KEY must be 32 characters long. Check .env file.");
+if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
+    console.error("FATAL ERROR: Secrets not loaded properly. Check .env file.");
     process.exit(1); 
 }
 
@@ -23,6 +19,7 @@ const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16; 
 const CHAT_HISTORY_FILE = 'chat_history.json';
 const FIXED_ROOM_KEY = 'fixed_chat_room'; 
+const MAX_USERS = 2;
 
 const app = express();
 const server = http.createServer(app);
@@ -30,16 +27,16 @@ const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*" },
     transports: ['websocket', 'polling'], 
-    pingTimeout: 60000 
+    // 🔥 MOBILE STABILITY FIX: Faster pings to detect disconnection early
+    pingInterval: 10000, // Ping every 10 seconds
+    pingTimeout: 30000   // Disconnect if no pong after 30 seconds
 });
 
 let chatHistory = [];
-let activeUsers = {}; 
-let userKeys = {}; 
-let selfDestructTime = 10000; // Set default to 10 seconds (10000ms)
+let activeUsers = {}; // Tracks active socket IDs to Usernames
+let selfDestructTime = 10000; // Default 10 seconds
 
-// --- SERVER ENCRYPTION (Fallback & History Storage) ---
-
+// --- SERVER ENCRYPTION (Fallback) ---
 function encryptServerSide(text) {
     if (!text) return '';
     const iv = crypto.randomBytes(IV_LENGTH);
@@ -63,7 +60,6 @@ function decryptServerSide(text) {
 }
 
 // --- PERSISTENCE ---
-
 function loadHistory() {
     if (!fs.existsSync(CHAT_HISTORY_FILE)) return;
     try {
@@ -72,8 +68,7 @@ function loadHistory() {
             if (msg.isE2EE) return msg; 
             return { ...msg, text: decryptServerSide(msg.text) };
         });
-        console.log("Chat history loaded.");
-    } catch (e) { chatHistory = []; console.log("No chat history file found or error loading.");}
+    } catch (e) { chatHistory = []; }
 }
 
 function saveHistory(message) {
@@ -82,7 +77,7 @@ function saveHistory(message) {
         if (msg.isE2EE) return msg; 
         return { ...msg, text: encryptServerSide(msg.text) };
     });
-    try { fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2)); } catch (e) { console.error("Error saving history:", e); }
+    try { fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2)); } catch (e) {}
 }
 
 function deleteMessageFromHistory(messageId) {
@@ -93,7 +88,7 @@ function deleteMessageFromHistory(messageId) {
             if (msg.isE2EE) return msg;
             return { ...msg, text: encryptServerSide(msg.text) };
         });
-        try { fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2)); } catch (e) { console.error("Error saving history after delete:", e); }
+        fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2));
     }
 }
 
@@ -105,44 +100,39 @@ app.use(express.json());
 // --- SOCKET.IO ---
 io.on('connection', (socket) => {
     
-    // 1. New Login
     socket.on('authenticate-user', ({ password }) => {
         if (password === FIXED_LOGIN_PASSWORD) {
             
             const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
-            if (currentRoomMembers.length >= MAX_USERS) {
-                socket.emit('auth-failure', 'Room Full. Max 2 users allowed.');
+            // 2 Users Check
+            if (currentRoomMembers.length >= MAX_USERS && !currentRoomMembers.includes(socket.id)) {
+                socket.emit('auth-failure', 'Room Full (2 Users Max).');
                 return; 
             }
             
+            // Assign User Type (A or B)
             const userA_active = Object.values(activeUsers).includes('UserA');
             const userB_active = Object.values(activeUsers).includes('UserB');
-            
             let userType;
 
-            if (!userA_active) {
-                userType = 'UserA';
-            } else if (!userB_active) {
-                userType = 'UserB';
-            } else {
-                socket.emit('auth-failure', 'System Error: Both Users Active.');
-                return;
-            }
+            if (!userA_active) userType = 'UserA';
+            else if (!userB_active) userType = 'UserB';
+            else userType = 'UserB'; // Fallback
 
-            activeUsers[socket.id] = userType; 
+            activeUsers[socket.id] = userType;
             
             socket.join(FIXED_ROOM_KEY);
             socket.data.username = userType; 
             socket.data.room = FIXED_ROOM_KEY;
 
-            // Send current selfDestructTime on auth success
             socket.emit('auth-success', { 
                 username: userType, 
                 history: chatHistory,
                 selfDestructTime: selfDestructTime
             });
 
+            // Notify partner
             socket.to(FIXED_ROOM_KEY).emit('partner-online', userType); 
 
         } else {
@@ -150,66 +140,44 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 2. Reconnect (REMOVED LOGIC - All logins go through 'authenticate-user' now)
-    // We are removing the 'reconnect-user' handler entirely as all successful logins now use 'auth-success'.
-    
-    // 3. Handle self-destruct time change and broadcast
-    socket.on('set-self-destruct-time', (newTime) => {
-        const newTimeInt = parseInt(newTime);
-        if (isNaN(newTimeInt)) return;
-
-        selfDestructTime = newTimeInt;
-        
-        // Broadcast the new time to all clients in the room
-        io.to(FIXED_ROOM_KEY).emit('sync-self-destruct-time', selfDestructTime);
-    });
-
-    // 4. Key Exchange
     socket.on('exchange-key', (data) => {
-        const sender = socket.data.username;
-        if (!sender) return;
-
-        userKeys[sender] = data.key; 
-        
-        // Send key to partner
         socket.to(FIXED_ROOM_KEY).emit('exchange-key', {
             key: data.key,
-            from: sender
+            from: socket.data.username
         });
-        
-        // FIX for Key Lost: Immediately check for partner's key and send it back
-        const partner = sender === 'UserA' ? 'UserB' : 'UserA';
-        if (userKeys[partner]) {
-             socket.emit('exchange-key', { 
-                 key: userKeys[partner], 
-                 from: partner
-             });
-        }
     });
 
-    // 5. Send Message
+    socket.on('set-self-destruct-time', (newTime) => {
+        selfDestructTime = newTime;
+        io.to(FIXED_ROOM_KEY).emit('sync-self-destruct-time', newTime);
+    });
+
     socket.on('send-message', (data) => {
+        // 🔥 CRITICAL: Check session validity before sending
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
-            socket.emit('auth-failure', 'Server Restarted. Please Refresh.');
+            socket.emit('auth-failure', 'Connection Lost. Refreshing...');
             return; 
         }
         
         const message = {
             id: data.messageId,
-            user: socket.data.username, 
+            user: socket.data.username,
             text: data.text,
             isE2EE: data.isE2EE || false,
             iv: data.iv || null,
             timestamp: Date.now(),
-            // Attach the current synchronized timer duration
-            timerDuration: selfDestructTime 
+            timerDuration: selfDestructTime
         };
         
         saveHistory(message); 
         socket.to(FIXED_ROOM_KEY).emit('receive-message', message);
     });
 
-    // 6. Typing
+    socket.on('message-viewed-and-delete', (messageId) => {
+        deleteMessageFromHistory(messageId);
+        socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
+    });
+    
     socket.on('typing', () => {
         if (socket.data.room === FIXED_ROOM_KEY) {
             socket.to(FIXED_ROOM_KEY).emit('partner-typing', socket.data.username);
@@ -222,19 +190,10 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 7. Auto-Delete (History Cleanup)
-    socket.on('message-viewed-and-delete', (messageId) => {
-        deleteMessageFromHistory(messageId);
-        socket.to(FIXED_ROOM_KEY).emit('message-autodeleted-clean', messageId);
-    });
-    
-    // 8. Disconnect
     socket.on('disconnect', () => {
         const disconnectedUser = socket.data.username;
         if (disconnectedUser && socket.data.room === FIXED_ROOM_KEY) {
-            
             delete activeUsers[socket.id];
-            
             socket.to(FIXED_ROOM_KEY).emit('partner-stop-typing', disconnectedUser); 
             socket.to(FIXED_ROOM_KEY).emit('partner-offline', disconnectedUser);
         }
