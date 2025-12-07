@@ -7,12 +7,11 @@ const crypto = require('crypto');
 require('dotenv').config();
 
 // --- FIXED CONFIGURATION ---
-const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD || 'supersecretpassword'; 
-const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY || 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // Must be 32 characters
-const MAX_USERS = 2; 
+const FIXED_LOGIN_PASSWORD = process.env.CHAT_LOGIN_PASSWORD; 
+const FIXED_SECRET_KEY = process.env.CHAT_SECRET_KEY; 
 
-if (FIXED_SECRET_KEY.length !== 32) {
-    console.error("FATAL ERROR: FIXED_SECRET_KEY must be 32 characters long. Check .env file.");
+if (!FIXED_LOGIN_PASSWORD || !FIXED_SECRET_KEY || FIXED_SECRET_KEY.length !== 32) {
+    console.error("FATAL ERROR: Secrets not loaded properly. Check .env file.");
     process.exit(1); 
 }
 
@@ -20,6 +19,7 @@ const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16; 
 const CHAT_HISTORY_FILE = 'chat_history.json';
 const FIXED_ROOM_KEY = 'fixed_chat_room'; 
+const MAX_USERS = 2;
 
 const app = express();
 const server = http.createServer(app);
@@ -27,13 +27,14 @@ const server = http.createServer(app);
 const io = new Server(server, { 
     cors: { origin: "*" },
     transports: ['websocket', 'polling'], 
-    pingInterval: 10000, 
-    pingTimeout: 50000 // Throttling के लिए आवश्यक
+    // 🔥 MOBILE STABILITY FIX: Faster pings to detect disconnection early
+    pingInterval: 10000, // Ping every 10 seconds
+    pingTimeout: 30000   // Disconnect if no pong after 30 seconds
 });
 
 let chatHistory = [];
-let activeUsers = {}; 
-let selfDestructTime = 10000; 
+let activeUsers = {}; // Tracks active socket IDs to Usernames
+let selfDestructTime = 10000; // Default 10 seconds
 
 // --- SERVER ENCRYPTION (Fallback) ---
 function encryptServerSide(text) {
@@ -87,7 +88,7 @@ function deleteMessageFromHistory(messageId) {
             if (msg.isE2EE) return msg;
             return { ...msg, text: encryptServerSide(msg.text) };
         });
-        try { fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2)); } catch (e) {}
+        fs.writeFileSync(CHAT_HISTORY_FILE, JSON.stringify(storageFormat, null, 2));
     }
 }
 
@@ -99,54 +100,25 @@ app.use(express.json());
 // --- SOCKET.IO ---
 io.on('connection', (socket) => {
     
-    socket.on('authenticate-user', ({ password, storedUsername }) => {
-        
-        // Handle stored user login attempt first (if no password provided)
-        if (storedUsername && activeUsers[socket.id] !== storedUsername) {
-            
-            const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
-            
-            const isStoredUserActive = Object.values(activeUsers).includes(storedUsername);
-            
-            if (currentRoomMembers.length >= MAX_USERS && !isStoredUserActive) {
-                socket.emit('auth-failure', 'Room Full. Max 2 users allowed.');
-                return; 
-            }
-            
-            activeUsers[socket.id] = storedUsername;
-            
-            socket.join(FIXED_ROOM_KEY);
-            socket.data.username = storedUsername; 
-            socket.data.room = FIXED_ROOM_KEY;
-
-            socket.emit('auth-success', { 
-                username: storedUsername, 
-                history: chatHistory,
-                selfDestructTime: selfDestructTime,
-                isRelogin: true // Signal client to proceed without password prompt
-            });
-
-            socket.to(FIXED_ROOM_KEY).emit('partner-online', storedUsername); 
-            return;
-        }
-
-        // Handle fresh login with password
+    socket.on('authenticate-user', ({ password }) => {
         if (password === FIXED_LOGIN_PASSWORD) {
             
             const currentRoomMembers = Array.from(io.sockets.adapter.rooms.get(FIXED_ROOM_KEY) || []);
             
+            // 2 Users Check
             if (currentRoomMembers.length >= MAX_USERS && !currentRoomMembers.includes(socket.id)) {
-                socket.emit('auth-failure', 'Room Full. Max 2 users allowed.');
+                socket.emit('auth-failure', 'Room Full (2 Users Max).');
                 return; 
             }
             
+            // Assign User Type (A or B)
             const userA_active = Object.values(activeUsers).includes('UserA');
             const userB_active = Object.values(activeUsers).includes('UserB');
             let userType;
 
             if (!userA_active) userType = 'UserA';
             else if (!userB_active) userType = 'UserB';
-            else userType = 'UserB'; 
+            else userType = 'UserB'; // Fallback
 
             activeUsers[socket.id] = userType;
             
@@ -157,10 +129,10 @@ io.on('connection', (socket) => {
             socket.emit('auth-success', { 
                 username: userType, 
                 history: chatHistory,
-                selfDestructTime: selfDestructTime,
-                isRelogin: false
+                selfDestructTime: selfDestructTime
             });
 
+            // Notify partner
             socket.to(FIXED_ROOM_KEY).emit('partner-online', userType); 
 
         } else {
@@ -181,6 +153,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('send-message', (data) => {
+        // 🔥 CRITICAL: Check session validity before sending
         if (!socket.data.username || socket.data.room !== FIXED_ROOM_KEY) {
             socket.emit('auth-failure', 'Connection Lost. Refreshing...');
             return; 
@@ -193,7 +166,7 @@ io.on('connection', (socket) => {
             isE2EE: data.isE2EE || false,
             iv: data.iv || null,
             timestamp: Date.now(),
-            timerDuration: data.timerDuration || selfDestructTime
+            timerDuration: selfDestructTime
         };
         
         saveHistory(message); 
