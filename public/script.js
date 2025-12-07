@@ -4,6 +4,7 @@
 const RENDER_APP_URL = "https://beautiful-chat.onrender.com"; 
 const socket = io(RENDER_APP_URL, { transports: ['websocket', 'polling'] }); 
 
+// References to HTML elements
 const loginForm = document.getElementById('login-form');
 const chatForm = document.getElementById('chat-form');
 const messagesDiv = document.getElementById('messages');
@@ -20,15 +21,10 @@ let isTyping = false;
 let timeout = undefined;
 let currentSelfDestructTime = 10000;
 
-// ✅ SESSION STORAGE: Data lost when tab closes
-const KEY_STORE_NAME = 'chat_e2ee_key_session'; 
-
 // --- CONNECTION CHECKS ---
 socket.on('connect', () => {
-    // If we have a username but socket reconnected, it means we might have lost session on server
-    // Reload to re-authenticate cleanly
     if (myUsername) {
-        // Optional: Can try to silently re-auth here, but reload is safer for sync
+        // If reconnected but we lost session context, reload to force clean login
         console.log("Reconnected to server.");
     }
 });
@@ -79,32 +75,6 @@ async function decryptE2EE(b64Cipher, b64Iv) {
         );
         return new TextDecoder().decode(decrypted);
     } catch (e) { return "🔒 Encrypted (Key Lost)"; }
-}
-
-// --- PERSISTENCE (Session Storage) ---
-async function saveState() {
-    if (myUsername && myKeyPair) {
-        const privateKeyJwk = await window.crypto.subtle.exportKey("jwk", myKeyPair.privateKey);
-        const state = { username: myUsername, privateKey: privateKeyJwk };
-        sessionStorage.setItem(KEY_STORE_NAME, JSON.stringify(state));
-    }
-}
-
-async function loadState() {
-    const storedState = sessionStorage.getItem(KEY_STORE_NAME);
-    if (!storedState) return false;
-    try {
-        const state = JSON.parse(storedState);
-        const privateKey = await window.crypto.subtle.importKey(
-            "jwk", state.privateKey, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey", "deriveBits"]
-        );
-        myUsername = state.username;
-        myKeyPair = { privateKey: privateKey }; 
-        return true;
-    } catch (e) {
-        sessionStorage.removeItem(KEY_STORE_NAME);
-        return false;
-    }
 }
 
 // --- UI HELPER FUNCTIONS ---
@@ -175,15 +145,8 @@ loginForm.addEventListener('submit', async (e) => {
     e.preventDefault(); 
     const pass = document.getElementById('password').value;
     
-    // Check session storage first
-    const stateLoaded = await loadState();
-    if (stateLoaded) {
-        // Reuse private key, generate new public key
-        const freshKeyPair = await generateKeyPair();
-        myKeyPair = { publicKey: freshKeyPair.publicKey, privateKey: myKeyPair.privateKey };
-    } else {
-        myKeyPair = await generateKeyPair();
-    }
+    // Fresh login always generates new keys
+    myKeyPair = await generateKeyPair();
     socket.emit('authenticate-user', { password: pass });
 });
 
@@ -223,7 +186,6 @@ chatForm.addEventListener('submit', async (e) => {
 // --- SOCKET EVENTS ---
 socket.on('auth-success', async ({ username, history, selfDestructTime }) => {
     myUsername = username;
-    await saveState(); 
     currentSelfDestructTime = selfDestructTime;
     if (deleteTimerSelect) deleteTimerSelect.value = selfDestructTime.toString();
     
@@ -296,7 +258,6 @@ socket.on('auth-failure', (msg) => {
         location.reload();
     } else {
         document.getElementById('error-msg').textContent = msg;
-        sessionStorage.removeItem(KEY_STORE_NAME);
     }
 });
 
